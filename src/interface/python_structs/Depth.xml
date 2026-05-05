@@ -1,0 +1,19 @@
+<root>
+  <!-- 对应 i_exchange_data.h: struct Depth: public Base -->
+  <!-- Base: ex_time(int64), local_time(int64), datetime(char[32]) -->
+  <struct name="Depth">
+    <member name="ex_time"    type="int64"               desc="交易所时间戳(ns)"/>
+    <member name="local_time" type="int64"               desc="本地时间戳(ns)"/>
+    <member name="datetime"   type="char"  size="32"     desc="格式化时间"/>
+    <member name="market"     type="char"  size="16"     desc="市场"/>
+    <member name="symbol"     type="char"  size="32"     desc="标的"/>
+    <member name="ask_cnt"    type="int"                 desc="卖档数"/>
+    <member name="ask_price"  type="double" count="10"  desc="卖价[10]"/>
+    <member name="ask_amount" type="double" count="10"  desc="卖量[10]"/>
+    <member name="bid_cnt"    type="int"                 desc="买档数"/>
+    <member name="bid_price"  type="double" count="10"  desc="买价[10]"/>
+    <member name="bid_amount" type="double" count="10"  desc="买量[10]"/>
+    <member name="seq_id"     type="int64"               desc="序号"/>
+    <member name="monotonic"  type="int64"               desc="单调时间戳(ns)"/>
+  </struct>
+</root>

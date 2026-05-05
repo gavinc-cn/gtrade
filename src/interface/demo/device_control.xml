@@ -1,0 +1,14 @@
+<root>
+    <struct name="DeviceEvent">
+        <member name="type" type="char" size="32" desc=""/>
+        <member name="x" type="int" desc=""/>
+        <member name="y" type="int" desc=""/>
+        <member name="dy" type="int" desc=""/>
+        <member name="dx" type="int" desc=""/>
+        <member name="button" type="char" size="32" desc=""/>
+        <member name="pressed" type="char" size="32" desc=""/>
+        <member name="key" type="char" size="32" desc=""/>
+        <member name="time" type="char" size="32" desc=""/>
+    </struct>
+</root>
+

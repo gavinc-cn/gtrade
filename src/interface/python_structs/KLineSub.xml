@@ -1,0 +1,12 @@
+<root>
+  <!-- 对应 i_strategy_engine.h: struct KLineSub -->
+  <!-- market 是 MarketCs (char[16])，instrument 是 InstrumentCs (char[32]) -->
+  <!-- scale 是 char（1字节），strat_id 是 StrategyIdCs (char[64]) -->
+  <struct name="KLineSub">
+    <member name="market"      type="char"  size="16" desc="市场"/>
+    <member name="instrument"  type="char"  size="32" desc="标的"/>
+    <member name="coefficient" type="int"             desc="时间周期系数"/>
+    <member name="scale"       type="char"  size="1"  desc="时间周期单位(d/H/M/S)"/>
+    <member name="strat_id"    type="char"  size="64" desc="策略ID"/>
+  </struct>
+</root>

@@ -1,0 +1,1 @@
+conan install . -b missing -pr=./conan_profile/win_release -s build_type=Release -of=conan_out/Release -d=full_deploy --deployer-folder=conan_lib/Release

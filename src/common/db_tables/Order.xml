@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<table st_name="Order" comment="委托表">
+    <fields>
+        <!--重要字段-->
+        <field name="entno" type="int64_t" comment="委托号" />
+        <field name="status" type="CharCs" comment="委托状态" />
+        <field name="fmt_time" type="int64_t" comment="格式化时间" />
+        <!--委托之后不变的字段-->
+        <field name="market" type="MarketCs" comment="市场" />
+        <field name="account_id" type="AccountIdCs" comment="账户ID" />
+        <field name="portfolio" type="PortfolioCs" comment="组合" />
+        <field name="inst_type" type="CharCs" comment="标的类型" />
+        <field name="inst_id" type="InstrumentCs" comment="标的名称" />
+        <field name="inst_id_code" type="int64_t" comment="标的唯一标识代码" />
+        <field name="policy_no" type="PolicyNoCs" comment="策略编号" />
+        <field name="private_no" type="PrivateNoCs" comment="私有号" />
+        <field name="bs_side" type="CharCs" comment="买卖方向(B/S)" />
+        <field name="pos_side" type="CharCs" comment="持仓方向" />
+        <field name="oc_side" type="CharCs" comment="开平方向" />
+        <field name="trade_mode" type="CharCs" comment="交易模式" />
+        <field name="price_type" type="CharCs" comment="价格类型" />
+        <field name="price" type="double" comment="价格" />
+        <field name="amount" type="double" comment="数量" />
+        <field name="ent_time" type="int64_t" comment="委托时间(纳秒)" />
+        <field name="expire_time" type="int64_t" comment="委托超时时间(纳秒)" />
+        <!--委托之后会变的字段-->
+        <field name="ex_entno" type="int64_t" comment="交易所委托号" />
+        <field name="filled_px" type="double" comment="成交均价" />
+        <field name="filled" type="double" comment="成交数量" />
+        <field name="remain" type="double" comment="剩余数量" />
+        <field name="confirm_time" type="int64_t" comment="委托确认时间(纳秒)" />
+        <field name="filled_time" type="int64_t" comment="成交时间(纳秒)" />
+        <field name="update_time" type="int64_t" comment="更新时间(纳秒)" />
+        <field name="source" type="CharCs" comment="委托来源" />
+        <field name="err_code" type="int" comment="错误码" />
+        <field name="err_msg" type="ErrMsgCs" comment="错误消息" />
+        <!--撤单相关字段-->
+        <field name="drawno" type="int64_t" comment="撤单号" />
+        <field name="draw_amt" type="double" comment="撤单数量" />
+        <field name="withdraw_time" type="int64_t" comment="撤单时间(纳秒)" />
+        <!--新加的字段-->
+        <field name="status_id" type="int" comment="订单状态id" />
+        <field name="status_gid" type="int64_t" comment="订单状态全局id" />
+        <field name="trd_px" type="double" comment="最近一笔成交价" />
+        <field name="trd_qty" type="double" comment="最近一笔成交量" />
+    </fields>
+
+    <indexes table_name="order" comment="委托表">
+        <primary_key>
+            <field>entno</field>
+        </primary_key>
+        <index name="idx_policy_no" type="index">
+            <field>policy_no</field>
+        </index>
+        <index name="idx_status" type="index">
+            <field>status</field>
+        </index>
+    </indexes>
+
+    <options>
+<!--        <option name="engine">InnoDB</option>-->
+<!--        <option name="charset">utf8mb4</option>-->
+    </options>
+
+</table>

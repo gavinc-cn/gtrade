@@ -1,0 +1,8 @@
+<root>
+  <!-- 对应 i_timer_manager.h: struct TimerKey（用于 kKillTimer） -->
+  <struct name="TimerKey">
+    <member name="service_name" type="char"  size="32" desc="服务名"/>
+    <member name="setter_id"    type="char"  size="64" desc="设置者ID"/>
+    <member name="timer_id"     type="int"             desc="定时器ID"/>
+  </struct>
+</root>

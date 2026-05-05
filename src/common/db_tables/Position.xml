@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<table st_name="Position" comment="持仓">
+    <fields>
+        <field name="market" type="MarketCs" comment="市场" />
+        <field name="account_id" type="AccountIdCs" comment="账户ID" />
+        <field name="inst_type" type="CharCs" comment="标的类型" />
+        <field name="instrument" type="InstrumentCs" comment="标的名称" />
+        <field name="pos_side" type="CharCs" comment="持仓方向[PosSide]" />
+        <field name="portfolio" type="PortfolioCs" comment="组合" />
+        <field name="margin_mode" type="CharCs" comment="保证金模式" />
+        <field name="avg_px" type="double" comment="成交均价" />
+        <field name="available" type="double" comment="可用数量" />
+        <field name="ex_time" type="int64_t" comment="交易所时间" />
+        <field name="local_time" type="int64_t" comment="本地时间" />
+        <field name="datetime" type="DateTimeCs" comment="格式化时间" />
+        <field name="upl" type="double" comment="未实现盈亏：交易所推送(账户持仓) / 本地计算(策略持仓)" />
+        <field name="upl_ratio" type="double" comment="未实现盈亏比率 - 来自交易所" />
+        <field name="notional_usd" type="double" comment="名义价值(USD) - 来自交易所" />
+        <field name="total_cost" type="double" comment="总成本（累计开仓价值 = Σ(数量 × 开仓价格)）" />
+        <field name="realized_pnl" type="double" comment="已实现盈亏（平仓产生的盈亏）" />
+        <field name="fee_paid" type="double" comment="已支付手续费" />
+        <field name="pos_source" type="CharCs" comment="持仓来源[PosSource]" />
+    </fields>
+
+    <indexes table_name="position" comment="持仓表">
+        <primary_key>
+            <field>market</field>
+            <field>account_id</field>
+            <field>inst_type</field>
+            <field>instrument</field>
+            <field>pos_side</field>
+        </primary_key>
+        <index name="idx_portfolio" type="index">
+            <field>portfolio</field>
+        </index>
+    </indexes>
+
+    <indexes table_name="portfolio_position" comment="组合持仓表">
+        <primary_key>
+            <field>market</field>
+            <field>account_id</field>
+            <field>inst_type</field>
+            <field>instrument</field>
+            <field>pos_side</field>
+            <field>portfolio</field>
+        </primary_key>
+        <index name="idx_account_id" type="index">
+            <field>account_id</field>
+        </index>
+    </indexes>
+
+    <options>
+    </options>
+
+</table>

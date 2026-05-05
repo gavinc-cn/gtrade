@@ -1,0 +1,44 @@
+<root>
+  <!-- 对应 db_structures.h: struct Order -->
+  <!-- CharCs 字段（status, inst_type, bs_side, pos_side, oc_side, trade_mode,
+       price_type, source, margin_mode）均为1字节 -->
+  <struct name="Order">
+    <member name="entno"        type="int64"            desc="委托号"/>
+    <member name="status"       type="char"  size="1"   desc="委托状态"/>
+    <member name="fmt_time"     type="int64"            desc="格式化时间"/>
+    <member name="market"       type="char"  size="16"  desc="市场"/>
+    <member name="account_id"   type="char"  size="32"  desc="账户ID"/>
+    <member name="portfolio"    type="char"  size="32"  desc="组合"/>
+    <member name="inst_type"    type="char"  size="1"   desc="标的类型"/>
+    <member name="inst_id"      type="char"  size="32"  desc="标的名称"/>
+    <member name="inst_id_code" type="int64"            desc="标的唯一标识代码"/>
+    <member name="policy_no"    type="char"  size="32"  desc="策略编号"/>
+    <member name="private_no"   type="char"  size="64"  desc="私有号"/>
+    <member name="bs_side"      type="char"  size="1"   desc="买卖方向(B/S)"/>
+    <member name="pos_side"     type="char"  size="1"   desc="持仓方向"/>
+    <member name="oc_side"      type="char"  size="1"   desc="开平方向"/>
+    <member name="trade_mode"   type="char"  size="1"   desc="交易模式"/>
+    <member name="price_type"   type="char"  size="1"   desc="价格类型"/>
+    <member name="price"        type="double"           desc="价格"/>
+    <member name="amount"       type="double"           desc="数量"/>
+    <member name="ent_time"     type="int64"            desc="委托时间(ns)"/>
+    <member name="expire_time"  type="int64"            desc="委托超时时间(ns)"/>
+    <member name="ex_entno"     type="int64"            desc="交易所委托号"/>
+    <member name="filled_px"    type="double"           desc="成交均价"/>
+    <member name="filled"       type="double"           desc="成交数量"/>
+    <member name="remain"       type="double"           desc="剩余数量"/>
+    <member name="confirm_time" type="int64"            desc="委托确认时间(ns)"/>
+    <member name="filled_time"  type="int64"            desc="成交时间(ns)"/>
+    <member name="update_time"  type="int64"            desc="更新时间(ns)"/>
+    <member name="source"       type="char"  size="1"   desc="委托来源"/>
+    <member name="err_code"     type="int"              desc="错误码"/>
+    <member name="err_msg"      type="char"  size="128" desc="错误消息"/>
+    <member name="drawno"       type="int64"            desc="撤单号"/>
+    <member name="draw_amt"     type="double"           desc="撤单数量"/>
+    <member name="withdraw_time" type="int64"           desc="撤单时间(ns)"/>
+    <member name="status_id"    type="int"              desc="订单状态id"/>
+    <member name="status_gid"   type="int64"            desc="订单状态全局id"/>
+    <member name="trd_px"       type="double"           desc="最近一笔成交价"/>
+    <member name="trd_qty"      type="double"           desc="最近一笔成交量"/>
+  </struct>
+</root>

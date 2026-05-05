@@ -1,0 +1,72 @@
+scheduler:
+  run_once: true
+
+# account_config: /etc/secret.yml
+# db_config: /etc/secret.db.yml
+
+csv2mysql:
+  csv_dir: D:\DataRepository
+  n_days: 400
+  start_day: 20260409
+  end_day: 20260419
+  database: gtrade
+
+proxy:
+  http: ""  # 从环境变量 HTTP_PROXY_HOST / HTTP_PROXY_PORT 读取
+  socks5: ""
+
+data_recoder:
+  out_dir: D:\DataRepository
+  start_day: 20260409
+  end_day: 20260419
+  n_days: 400
+
+data_repo:
+  depth1:
+    okx:
+#      - BTC-USDT
+#      - ETH-USDT
+#      - BTC-USDT-251031
+#      - BTC-USDT-251114
+#      - BTC-USDT-260327
+    okx_dummy:
+      - BTC-USDT
+      - BTC-USDT-SWAP
+  kline_1M:
+    okx:
+#      - BTC-USDT
+#      - ETH-USDT
+#      - BTC-USDT-251031
+#      - BTC-USDT-251114
+#      - BTC-USDT-260327
+  kline_1H:
+    okx:
+#      - BTC-USDT
+#      - ETH-USDT
+#      - BTC-USDT-251031
+#      - BTC-USDT-251114
+#      - BTC-USDT-260327
+    okx_dummy:
+      - BTC-USDT
+      - BTC-USDT-SWAP
+
+## 调度器配置（Docker环境）
+#scheduler:
+#  data_recorder:
+#    data_cfg: data_config.yml
+#    config: /app/src/config.yml
+#    out_dir: /app/data_repo
+#    start_day:
+#    end_day:
+#    n_days: 1
+#  csv2mysql:
+#    data_cfg: data_config.yml
+#    csv_dir: /app/data_repo
+#    n_days: 1
+#    start_day:
+#    end_day:
+#    host: mysql-test
+#    port: 3306
+#    user: gtrade
+#    pwd: ""  # 从环境变量 DB_PASSWORD 读取
+#    database: gtrade

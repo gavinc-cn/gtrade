@@ -1,0 +1,9 @@
+<root>
+  <!-- 对应 i_strategy_engine.h: struct TradeSub -->
+  <struct name="TradeSub">
+    <member name="market"      type="char"  size="16" desc="市场"/>
+    <member name="account_id"  type="char"  size="32" desc="账户ID"/>
+    <member name="inst_id"     type="char"  size="32" desc="标的"/>
+    <member name="strat_id"    type="char"  size="64" desc="策略ID"/>
+  </struct>
+</root>

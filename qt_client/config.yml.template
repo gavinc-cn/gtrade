@@ -1,0 +1,77 @@
+# GTrade Qt Client Configuration File
+#
+# This file configures the connection to GTrade backend services.
+# Copy this file to 'config.yml' and fill in your settings.
+
+general:
+  # Backend type: desktop_gateway (recommended) or http (legacy)
+  backend_type: desktop_gateway
+
+  # Default username (optional, for convenience)
+  default_username: admin
+
+  # Enable debug logging (deprecated, use logging.log_level instead)
+  debug: false
+
+
+desktop_gateway:
+  # gRPC endpoint for desktop_gateway service
+  # Format: <host>:<port>
+  # Example: localhost:50051
+  endpoint: localhost:50051
+
+  # Server's public key (optional, for future authentication support)
+  # Leave empty for now - authentication not yet implemented
+  public_key: ""
+
+
+http_backend:
+  # HTTP backend URLs
+  # web_server is the Flask REST API (for /api/strategies, /api/positions, etc.)
+  # Required even when using desktop_gateway, as some API calls are proxied to web_server
+  web_server_url: http://localhost:5000
+
+  # gtrade_http is the C++ HTTP gateway (port 8080, legacy)
+  gtrade_http_url: http://localhost:8080
+
+
+logging:
+  # Log file path (relative or absolute)
+  log_file: logs/gtrade_client.log
+
+  # Log level: debug, info, warning, error, critical
+  # Note: warning and above are also output to console
+  log_level: info
+
+
+# INSTRUCTIONS
+# ============
+#
+# 1. Start the GTrade C++ backend:
+#    cd /opt/win/gtrade/bin
+#    ./gtrade
+#
+# 2. Start the Flask web_server (required for API data):
+#    cd /opt/win/gtrade/web_server
+#    set DB_HOST=localhost
+#    set DB_PORT=3307
+#    python app.py
+#
+# 3. Find the desktop_gateway server public key in the logs (if required):
+#    Look for a line like:
+#    "Desktop Gateway gRPC server public key: <KEY>"
+#
+# 4. Copy that key and paste it into the 'public_key' field above
+#
+# 5. Save this file as 'config.yml' (remove .template suffix)
+#
+# 6. Run the Qt client:
+#    ./GTradeClient
+#
+# 7. Login with credentials from config/config.yml
+#    Default: admin / <password from config>
+#
+# IMPORTANT NOTES:
+# - The Qt client connects to desktop_gateway via gRPC for authentication
+# - Data APIs (/api/positions, /api/orders, etc.) are proxied to web_server
+# - Make sure web_server_url points to your Flask server location

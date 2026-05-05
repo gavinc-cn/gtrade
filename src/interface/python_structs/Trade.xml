@@ -1,0 +1,23 @@
+<root>
+  <!-- 对应 db_structures.h: struct Trade -->
+  <!-- CharCs 字段（td_side, pos_side, px_type, margin_mode）均为1字节，ABI 与 char 一致 -->
+  <struct name="Trade">
+    <member name="tdno"         type="int64"           desc="成交号"/>
+    <member name="market"       type="char"  size="16" desc="市场"/>
+    <member name="account_id"   type="char"  size="32" desc="账户ID"/>
+    <member name="portfolio"    type="char"  size="32" desc="组合"/>
+    <member name="instrument"   type="char"  size="32" desc="标的名称"/>
+    <member name="strat_id"     type="char"  size="32" desc="策略编号"/>
+    <member name="private_no"   type="char"  size="64" desc="私有号"/>
+    <member name="ordno"        type="int64"           desc="委托号"/>
+    <member name="td_side"      type="char"  size="1"  desc="买卖方向(B/S)"/>
+    <member name="pos_side"     type="char"  size="1"  desc="持仓方向"/>
+    <member name="px_type"      type="char"  size="1"  desc="价格类型"/>
+    <member name="td_px"        type="double"          desc="成交价格"/>
+    <member name="td_qty"       type="double"          desc="成交数量"/>
+    <member name="td_val"       type="double"          desc="成交金额"/>
+    <member name="filled_time"  type="int64"           desc="成交时间(ns)"/>
+    <member name="ord_status_id" type="int64"          desc="委托状态id"/>
+    <member name="margin_mode"  type="char"  size="1"  desc="保证金模式"/>
+  </struct>
+</root>

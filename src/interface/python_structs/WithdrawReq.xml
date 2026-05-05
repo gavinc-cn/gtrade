@@ -1,0 +1,9 @@
+<root>
+  <!-- 对应 i_strategy_engine.h: struct WithdrawReq -->
+  <struct name="WithdrawReq">
+    <member name="market"      type="char"  size="16" desc="市场"/>
+    <member name="account_id"  type="char"  size="32" desc="账户ID"/>
+    <member name="instrument"  type="char"  size="32" desc="标的"/>
+    <member name="entno"       type="int64"           desc="委托号"/>
+  </struct>
+</root>

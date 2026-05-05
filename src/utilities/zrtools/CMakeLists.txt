@@ -1,0 +1,5 @@
+file(GLOB_RECURSE SRC_LIST *.cpp)
+## list(REMOVE_ITEM SRC_LIST ${CMAKE_CURRENT_SOURCE_DIR}/a.cpp)
+add_library(zrtools ${SRC_LIST})
+#target_precompile_headers(zrtools PUBLIC "${BASE_DIR}/headers.h")
+target_link_libraries(zrtools )

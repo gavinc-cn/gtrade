@@ -1,0 +1,24 @@
+<root>
+  <!-- 对应 i_strategy_engine.h: struct OrderReq -->
+  <!-- bs_side/pos_side/oc_side/price_type/trade_mode 均为 plain char（1字节） -->
+  <struct name="OrderReq">
+    <member name="market"        type="char"  size="16" desc="市场"/>
+    <member name="account_id"    type="char"  size="32" desc="账户ID"/>
+    <member name="portfolio"     type="char"  size="32" desc="组合"/>
+    <member name="inst_id"       type="char"  size="32" desc="标的"/>
+    <member name="inst_id_code"  type="int64"           desc="标的唯一标识代码"/>
+    <member name="policy_no"     type="char"  size="32" desc="策略编号"/>
+    <member name="private_no"    type="char"  size="64" desc="私有号"/>
+    <member name="entno"         type="int64"           desc="委托号"/>
+    <member name="bs_side"       type="char"  size="1"  desc="买卖方向 b/s"/>
+    <member name="pos_side"      type="char"  size="1"  desc="持仓方向 l/s/n"/>
+    <member name="oc_side"       type="char"  size="1"  desc="开平方向 o/c"/>
+    <member name="price_type"    type="char"  size="1"  desc="价格类型 l/m"/>
+    <member name="trade_mode"    type="char"  size="1"  desc="交易模式 c/i"/>
+    <member name="price"         type="double"          desc="价格"/>
+    <member name="amount"        type="double"          desc="数量"/>
+    <member name="expire_time"   type="int64"           desc="超时时间(ns)"/>
+    <member name="ent_time"      type="int64"           desc="委托时间(ns)"/>
+    <member name="quote_monotonic" type="int64"         desc="行情单调时间戳"/>
+  </struct>
+</root>

@@ -1,0 +1,8 @@
+# 全局默认
+[*]
+end_of_line = lf
+
+# 单独针对 shell 脚本
+[*.sh]
+end_of_line = lf
+charset = utf-8

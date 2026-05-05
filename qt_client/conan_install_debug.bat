@@ -1,0 +1,1 @@
+conan install . -b missing -pr=./conan_profile/win_debug -s build_type=Debug -of=conan_out/Debug -d=full_deploy --deployer-folder=conan_lib/Debug

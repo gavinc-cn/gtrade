@@ -1,0 +1,25 @@
+<root>
+  <!-- 对应 db_structures.h: struct Position -->
+  <!-- CharCs 字段（inst_type, pos_side, margin_mode, pos_source）均为1字节 -->
+  <struct name="Position">
+    <member name="market"       type="char"  size="16" desc="市场"/>
+    <member name="account_id"   type="char"  size="32" desc="账户ID"/>
+    <member name="inst_type"    type="char"  size="1"  desc="标的类型"/>
+    <member name="instrument"   type="char"  size="32" desc="标的名称"/>
+    <member name="pos_side"     type="char"  size="1"  desc="持仓方向[PosSide]"/>
+    <member name="portfolio"    type="char"  size="32" desc="组合"/>
+    <member name="margin_mode"  type="char"  size="1"  desc="保证金模式"/>
+    <member name="avg_px"       type="double"          desc="成交均价"/>
+    <member name="available"    type="double"          desc="可用数量"/>
+    <member name="ex_time"      type="int64"           desc="交易所时间"/>
+    <member name="local_time"   type="int64"           desc="本地时间"/>
+    <member name="datetime"     type="char"  size="32" desc="格式化时间"/>
+    <member name="upl"          type="double"          desc="未实现盈亏"/>
+    <member name="upl_ratio"    type="double"          desc="未实现盈亏比率"/>
+    <member name="notional_usd" type="double"          desc="名义价值(USD)"/>
+    <member name="total_cost"   type="double"          desc="总成本"/>
+    <member name="realized_pnl" type="double"          desc="已实现盈亏"/>
+    <member name="fee_paid"     type="double"          desc="已支付手续费"/>
+    <member name="pos_source"   type="char"  size="1"  desc="持仓来源[PosSource]"/>
+  </struct>
+</root>

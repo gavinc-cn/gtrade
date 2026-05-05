@@ -1,0 +1,320 @@
+syntax = "proto3";
+
+package gtrade.desktop_gateway;
+
+// ============================================================================
+// 通用消息类型
+// ============================================================================
+
+// 通用响应状态
+message Status {
+  int32 code = 1;           // HTTP状态码 (200, 401, 500等)
+  bool success = 2;         // 操作是否成功
+  string message = 3;       // 错误消息或成功提示
+}
+
+// 空请求（用于无参数的请求）
+message Empty {}
+
+// ============================================================================
+// 认证相关消息
+// ============================================================================
+
+// 登录请求
+message LoginRequest {
+  string username = 1;
+  string password = 2;
+}
+
+// 登录响应
+message LoginResponse {
+  Status status = 1;
+  string token = 2;         // JWT token
+  int64 expires_at = 3;     // token过期时间 (Unix timestamp)
+}
+
+// ============================================================================
+// 策略管理消息
+// ============================================================================
+
+// 策略信息
+message Strategy {
+  string strat_id = 1;
+  string template_name = 2;
+  string status = 3;
+  string create_time = 4;
+  string update_time = 5;
+  string config_json = 6;   // 策略配置的JSON字符串
+}
+
+// 获取所有策略请求
+message GetStrategiesRequest {
+  string template_name = 1;  // 可选：按模板过滤
+}
+
+// 获取所有策略响应
+message GetStrategiesResponse {
+  Status status = 1;
+  repeated Strategy strategies = 2;
+}
+
+// 获取单个策略请求
+message GetStrategyRequest {
+  string strat_id = 1;
+}
+
+// 获取单个策略响应
+message GetStrategyResponse {
+  Status status = 1;
+  Strategy strategy = 2;
+}
+
+// 添加策略请求
+message AddStrategyRequest {
+  string config_json = 1;   // 策略配置的JSON字符串
+}
+
+// 添加策略响应
+message AddStrategyResponse {
+  Status status = 1;
+  string strat_id = 2;      // 新创建的策略ID
+}
+
+// 删除策略请求
+message DeleteStrategyRequest {
+  string strat_id = 1;
+}
+
+// 删除策略响应
+message DeleteStrategyResponse {
+  Status status = 1;
+}
+
+// 启动策略请求
+message StartStrategyRequest {
+  string strat_id = 1;
+}
+
+// 启动策略响应
+message StartStrategyResponse {
+  Status status = 1;
+}
+
+// 停止策略请求
+message StopStrategyRequest {
+  string strat_id = 1;
+}
+
+// 停止策略响应
+message StopStrategyResponse {
+  Status status = 1;
+}
+
+// 重启策略请求
+message RestartStrategyRequest {
+  string strat_id = 1;
+}
+
+// 重启策略响应
+message RestartStrategyResponse {
+  Status status = 1;
+}
+
+// 批量操作请求
+message BatchOperationRequest {
+  repeated string strat_ids = 1;
+  string operation = 2;     // "start", "stop", "restart", "delete"
+}
+
+// 批量操作响应
+message BatchOperationResponse {
+  Status status = 1;
+  int32 success_count = 2;
+  int32 failed_count = 3;
+  repeated string failed_ids = 4;
+}
+
+// ============================================================================
+// 订单管理消息
+// ============================================================================
+
+// 订单信息
+message Order {
+  string order_id = 1;
+  string strat_id = 2;
+  string instrument = 3;
+  string side = 4;
+  string order_type = 5;
+  double price = 6;
+  double quantity = 7;
+  string status = 8;
+  string create_time = 9;
+  string update_time = 10;
+}
+
+// 获取订单请求
+message GetOrdersRequest {
+  string strat_id = 1;      // 可选：按策略过滤
+  string instrument = 2;    // 可选：按交易对过滤
+  string status = 3;        // 可选：按状态过滤
+  int32 page = 4;           // 页码
+  int32 page_size = 5;      // 每页数量
+}
+
+// 获取订单响应
+message GetOrdersResponse {
+  Status status = 1;
+  repeated Order orders = 2;
+  int32 total = 3;          // 总数量
+  int32 page = 4;
+  int32 page_size = 5;
+}
+
+// ============================================================================
+// 成交管理消息
+// ============================================================================
+
+// 成交信息
+message Trade {
+  string trade_id = 1;
+  string order_id = 2;
+  string strat_id = 3;
+  string instrument = 4;
+  string side = 5;
+  double price = 6;
+  double quantity = 7;
+  double fee = 8;
+  string trade_time = 9;
+}
+
+// 获取成交请求
+message GetTradesRequest {
+  string strat_id = 1;
+  string instrument = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
+// 获取成交响应
+message GetTradesResponse {
+  Status status = 1;
+  repeated Trade trades = 2;
+  int32 total = 3;
+  int32 page = 4;
+  int32 page_size = 5;
+}
+
+// ============================================================================
+// 持仓管理消息
+// ============================================================================
+
+// 持仓信息
+message Position {
+  string strat_id = 1;
+  string instrument = 2;
+  double quantity = 3;
+  double avg_price = 4;
+  double unrealized_pnl = 5;
+  double realized_pnl = 6;
+  string update_time = 7;
+}
+
+// 获取持仓请求
+message GetPositionsRequest {
+  string strat_id = 1;
+  string instrument = 2;
+}
+
+// 获取持仓响应
+message GetPositionsResponse {
+  Status status = 1;
+  repeated Position positions = 2;
+}
+
+// ============================================================================
+// 模板管理消息
+// ============================================================================
+
+// 获取策略模板列表请求
+message GetTemplatesRequest {
+}
+
+// 获取策略模板列表响应
+message GetTemplatesResponse {
+  Status status = 1;
+  repeated string template_names = 2;
+}
+
+// 获取模板配置请求
+message GetTemplateConfigRequest {
+  string template_name = 1;
+}
+
+// 获取模板配置响应
+message GetTemplateConfigResponse {
+  Status status = 1;
+  string config_json = 2;   // 模板配置的JSON字符串
+}
+
+// ============================================================================
+// 数据字典消息
+// ============================================================================
+
+// 获取数据字典请求
+message GetDictionaryRequest {
+}
+
+// 字典项
+message DictItem {
+  string key = 1;
+  string value = 2;
+  string label = 3;
+  string color = 4;
+}
+
+// 字典组
+message DictGroup {
+  string name = 1;
+  repeated DictItem items = 2;
+}
+
+// 获取数据字典响应
+message GetDictionaryResponse {
+  Status status = 1;
+  repeated DictGroup groups = 2;
+}
+
+// ============================================================================
+// gRPC 服务定义
+// ============================================================================
+
+service DesktopGateway {
+  // 认证
+  rpc Login(LoginRequest) returns (LoginResponse);
+
+  // 策略管理
+  rpc GetStrategies(GetStrategiesRequest) returns (GetStrategiesResponse);
+  rpc GetStrategy(GetStrategyRequest) returns (GetStrategyResponse);
+  rpc AddStrategy(AddStrategyRequest) returns (AddStrategyResponse);
+  rpc DeleteStrategy(DeleteStrategyRequest) returns (DeleteStrategyResponse);
+  rpc StartStrategy(StartStrategyRequest) returns (StartStrategyResponse);
+  rpc StopStrategy(StopStrategyRequest) returns (StopStrategyResponse);
+  rpc RestartStrategy(RestartStrategyRequest) returns (RestartStrategyResponse);
+  rpc BatchOperation(BatchOperationRequest) returns (BatchOperationResponse);
+
+  // 订单管理
+  rpc GetOrders(GetOrdersRequest) returns (GetOrdersResponse);
+
+  // 成交管理
+  rpc GetTrades(GetTradesRequest) returns (GetTradesResponse);
+
+  // 持仓管理
+  rpc GetPositions(GetPositionsRequest) returns (GetPositionsResponse);
+
+  // 模板管理
+  rpc GetTemplates(GetTemplatesRequest) returns (GetTemplatesResponse);
+  rpc GetTemplateConfig(GetTemplateConfigRequest) returns (GetTemplateConfigResponse);
+
+  // 数据字典
+  rpc GetDictionary(GetDictionaryRequest) returns (GetDictionaryResponse);
+}

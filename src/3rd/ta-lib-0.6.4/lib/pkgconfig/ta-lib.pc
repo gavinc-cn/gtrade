@@ -1,0 +1,11 @@
+prefix=/opt/ta-lib-0.6.4
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include/ta-lib
+
+Name: ta-lib
+Description: TA-Lib : Technical Analysis Library
+URL: https://github.com/TA-Lib/ta-lib
+Version: 0.6.4
+Cflags: -I${includedir}
+Libs: -L${libdir} -lta-lib

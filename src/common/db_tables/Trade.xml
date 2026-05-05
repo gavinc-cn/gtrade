@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<table st_name="Trade" comment="成交表">
+    <fields>
+        <!-- C++结构体字段（按顺序） -->
+        <field name="tdno" type="int64_t" comment="成交号" />
+        <field name="market" type="MarketCs" comment="市场" />
+        <field name="account_id" type="AccountIdCs" comment="账户ID" />
+        <field name="portfolio" type="PortfolioCs" comment="组合" />
+        <field name="instrument" type="InstrumentCs" comment="标的名称" />
+        <field name="strat_id" type="PolicyNoCs" comment="策略编号" />
+        <field name="private_no" type="PrivateNoCs" comment="私有号" />
+        <field name="ordno" type="int64_t" comment="委托号" />
+        <field name="td_side" type="CharCs" comment="买卖方向(B/S)" />
+        <field name="pos_side" type="CharCs" comment="持仓方向" />
+        <field name="px_type" type="CharCs" comment="价格类型" />
+        <field name="td_px" type="double" comment="成交价格" />
+        <field name="td_qty" type="double" comment="成交数量" />
+        <field name="td_val" type="double" comment="成交金额" />
+        <field name="filled_time" type="int64_t" comment="成交时间(纳秒)" />
+        <field name="ord_status_id" type="int64_t" comment="委托状态id" />
+        <field name="margin_mode" type="CharCs" comment="保证金模式" />
+    </fields>
+
+    <indexes table_name="trade" comment="成交表">
+        <primary_key>
+            <field>tdno</field>
+        </primary_key>
+    </indexes>
+
+    <options>
+    </options>
+
+</table>

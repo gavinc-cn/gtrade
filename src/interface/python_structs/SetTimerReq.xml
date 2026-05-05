@@ -1,0 +1,11 @@
+<root>
+  <!-- 对应 i_timer_manager.h: struct SetTimerReq: public TimerKey -->
+  <!-- TimerKey: service_name(char[32]), setter_id(char[64]), timer_id(int) -->
+  <struct name="SetTimerReq">
+    <member name="service_name" type="char"  size="32" desc="服务名（来自 TimerKey）"/>
+    <member name="setter_id"    type="char"  size="64" desc="设置者ID（来自 TimerKey）"/>
+    <member name="timer_id"     type="int"             desc="定时器ID（来自 TimerKey）"/>
+    <member name="delay_ms"     type="int"             desc="触发延迟(ms)"/>
+    <member name="repeat"       type="bool"            desc="是否重复触发"/>
+  </struct>
+</root>

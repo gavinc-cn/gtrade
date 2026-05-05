@@ -1,0 +1,14 @@
+<root>
+  <!-- 对应 db_structures.h: struct Balance -->
+  <struct name="Balance">
+    <member name="ex_time"    type="int64"           desc="交易所时间(ns)"/>
+    <member name="local_time" type="int64"           desc="本地时间(ns)"/>
+    <member name="datetime"   type="char"  size="32" desc="格式化时间"/>
+    <member name="market"     type="char"  size="16" desc="市场"/>
+    <member name="account_id" type="char"  size="32" desc="账户ID"/>
+    <member name="currency"   type="char"  size="8"  desc="币种"/>
+    <member name="available"  type="double"          desc="可用余额"/>
+    <member name="frozen"     type="double"          desc="冻结余额"/>
+    <member name="total"      type="double"          desc="总余额"/>
+  </struct>
+</root>

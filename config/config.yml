@@ -1,0 +1,76 @@
+strategy_config:
+#  - strategy_config/strategy_recorder.yml
+#  - strategy_config/demo_okx.yml
+#  - strategy_config/strat_fut_arbi_BTC_USDT.yml
+#  - strategy_config/indicator_kline_1H_BTC_USDT.yml
+#  - strategy_config/strat_sma_BTC_USDT.yml
+#  - strategy_config/strat_sma_v2_BTC_USDT.yml
+#  - strategy_config/strat_fut_arbi_v3_BTC_USDT.yml
+#  - strategy_config/strat_demo_BTC_USDT.yml
+#account_config: /etc/secret.yml
+#db_config: /etc/secret.db.yml
+account_config: /etc/secret.yml
+db_config: /etc/secret.db.yml
+data_config: ./config/data_config.yml
+slack_config: ./config/slack_config.yml
+
+logger:
+  log_file: "log/gtrade.log"
+  async: false
+  show_level: "info"
+  log_level: "trace,info,error"
+  max_files: 10
+
+proxy:
+  http: ""  # 从环境变量 HTTP_PROXY_HOST / HTTP_PROXY_PORT 读取
+  socks5: ""
+
+url:
+  okx:
+    rest: "https://www.okx.com"
+    ws_public: "wss://ws.okx.com:8443/ws/v5/public"
+    ws_private: "wss://ws.okx.com:8443/ws/v5/private"
+  okx_dummy:
+    rest: "https://www.okx.com"
+    ws_public: "wss://wspap.okx.com:8443/ws/v5/public"
+    ws_private: "wss://wspap.okx.com:8443/ws/v5/private"
+
+
+# 查询服务线程数
+query_processor_num: 10
+# http服务端口
+http_server_port: 46012
+# 委托等数据维护天数(启动时会加载最近7天的委托)
+entrust_maintain_days: 7
+
+# desktop_gateway配置 (gRPC only)
+desktop_gateway:
+  enabled: true
+  # gRPC服务器配置
+  server_address: "0.0.0.0:50051"  # gRPC服务器地址
+  ca_cert: "certs/ca.crt"  # CA证书路径
+  server_cert: "certs/server.crt"  # 服务器证书路径
+  server_key: "certs/server.key"  # 服务器私钥路径
+  # JWT认证配置
+  jwt_secret: ""  # 从环境变量 JWT_SECRET 读取
+  jwt_expiration: 86400  # Token过期时间(秒), 默认24小时
+
+###### web ######
+user: ""  # 从环境变量 WEB_USER 读取
+password: ""  # 从环境变量 WEB_PASSWORD 读取
+
+###### 回测 ######
+# 回测起始日期UTC(YYYYmmdd_HHMM)
+start_date: 20250925_0000
+# 回测结束日期UTC(YYYYmmdd_HHMM)
+end_date:   20251012_0000
+# 回测速度倍率
+backtest_rate: 1
+# 回测间隔(毫秒, 非0会覆盖回测速度)
+backtest_interval: 1
+# csv行情保存路径
+csv_quote_base_dir: /root/data_repo
+# 成交委托输出目录
+backtest_out_dir: /root/backtest
+# 成交模式 i - immediate, s - simulate
+fill_mode: i

@@ -1,0 +1,49 @@
+# autoresearch_config.yml
+anthropic_api_key: ""          # 或从环境变量 ANTHROPIC_API_KEY 读取
+claude_model: "claude-sonnet-4-6"
+
+mysql:                         # 复用项目现有 MySQL（无需额外部署）
+  host: "localhost"
+  port: 3307
+  db: "gtrade"
+  user: "gtrade"
+  password: ""  # 从环境变量 DB_PASSWORD 读取
+
+redis:
+  host: "localhost"
+  port: 6379
+  db: 1                        # db=1，与业务 db=0 隔离
+
+paths:
+  strategy_dir: "/root/autoresearch/strategies"
+  csv_quote_base_dir: "/root/data_repo"
+  backtest_out_dir: "/root/autoresearch/backtest"
+  gtrade_bt_bin: "/opt/win/gtrade/cmake-build-debug-dockerubuntu24/bin/gtrade_bt"
+  live_strategy_config_dir: "/opt/win/gtrade/strategy_config"
+
+backtest:
+  default_start: "20240101_0000"
+  default_end: "20241231_0000"
+  fill_mode: "i"               # i=立即成交, s=orderbook撮合
+  timeout_seconds: 300
+  max_concurrent_workers: 4    # 并行 Worker 数量上限
+
+promotion:
+  min_sharpe: 1.5
+  max_drawdown: 0.15
+  min_calmar: 1.0
+  min_oos_sharpe_ratio: 0.7   # OOS Sharpe 至少是 min_sharpe 的这个比例
+  min_ic_mean: 0.02           # IC均值门槛；0.02 是业界最低有效线，0 表示不检查
+  ic_window: 20               # 滚动 IC 计算窗口（交易笔数）
+
+monitor:
+  poll_interval_seconds: 60
+  circuit_breaker_drawdown: 0.08
+
+circuit_breaker:               # pipeline 级熔断（连续失败保护）
+  enabled: true
+  consecutive_failures_threshold: 5
+  cooldown_minutes: 60
+
+human_gates:
+  require_approval_before_live: true

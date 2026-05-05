@@ -1,0 +1,13 @@
+dtale
+pandas
+quantstats
+pyyaml
+clickhouse-driver
+clickhouse-cityhash
+pymongo
+bson
+CppHeaderParser
+pymysql
+sqlalchemy
+apscheduler
+psutil==7.0.0

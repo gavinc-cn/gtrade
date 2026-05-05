@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<table st_name="StrategyLog" comment="策略运行日志表">
+    <fields>
+        <field name="strat_id" type="PolicyNoCs" comment="策略编号" />
+        <field name="log_level" type="CharCs" comment="日志等级: I/W/E" />
+        <field name="log_time" type="int64_t" comment="日志时间(纳秒)" />
+        <field name="seq" type="uint16_t" comment="同纳秒内序号，防止主键碰撞" />
+        <field name="content" type="LogContentCs" comment="日志内容" />
+    </fields>
+
+    <indexes table_name="strategy_log" comment="策略运行日志表">
+        <primary_key>
+            <field>strat_id</field>
+            <field>log_time</field>
+            <field>seq</field>
+        </primary_key>
+    </indexes>
+
+    <options>
+    </options>
+
+</table>

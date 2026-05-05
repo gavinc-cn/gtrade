@@ -1,0 +1,18 @@
+<root>
+  <!-- 对应 db_structures.h: struct KLine -->
+  <!-- KLine 中 scale 是 CharCs（1字节结构体），与 char 1字节 ABI 兼容 -->
+  <struct name="KLine">
+    <member name="ex_time"     type="int64"           desc="交易所时间戳(ns)"/>
+    <member name="local_time"  type="int64"           desc="本地接收时间戳(ns)"/>
+    <member name="datetime"    type="char"  size="32" desc="格式化时间字符串"/>
+    <member name="market"      type="char"  size="16" desc="市场"/>
+    <member name="instrument"  type="char"  size="32" desc="标的"/>
+    <member name="coefficient" type="int"             desc="时间周期系数"/>
+    <member name="scale"       type="char"  size="1"  desc="时间周期单位(d/H/M/S)"/>
+    <member name="open"        type="double"          desc="开盘价"/>
+    <member name="high"        type="double"          desc="最高价"/>
+    <member name="low"         type="double"          desc="最低价"/>
+    <member name="close"       type="double"          desc="收盘价"/>
+    <member name="volume"      type="double"          desc="成交量"/>
+  </struct>
+</root>

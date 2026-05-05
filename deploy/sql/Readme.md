@@ -1,0 +1,4 @@
+-- 创建kline表的通用结构
+-- 这里以1m为例，其他时间周期的表可以类似创建
+-- 创建其他时间周期的表
+-- CREATE TABLE IF NOT EXISTS kline_5m LIKE kline_1M;

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<table st_name="KLine" comment="K线数据表">
+    <fields>
+        <!-- C++结构体字段（按顺序） -->
+        <field name="ex_time" type="int64_t" comment="交易所时间戳(纳秒)" />
+        <field name="local_time" type="int64_t" comment="本地接收时间戳(纳秒)" />
+        <field name="datetime" type="DateTimeCs" comment="格式化时间字符串"/>
+        <field name="market" type="MarketCs" comment="市场" />
+        <field name="instrument" type="InstrumentCs" comment="标的" />
+        <field name="coefficient" type="int" comment="时间周期系数" />
+        <field name="scale" type="CharCs" comment="时间周期单位(d/H/M/S)" />
+        <field name="open" type="double" comment="开盘价" />
+        <field name="high" type="double" comment="最高价" />
+        <field name="low" type="double" comment="最低价" />
+        <field name="close" type="double" comment="收盘价" />
+        <field name="volume" type="double" comment="成交量" />
+    </fields>
+
+    <indexes table_name="kline" comment="K线数据表">
+        <primary_key>
+            <field>market</field>
+            <field>instrument</field>
+            <field>ex_time</field>
+        </primary_key>
+    </indexes>
+
+    <options>
+    </options>
+
+</table>

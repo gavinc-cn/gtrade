@@ -1,0 +1,23 @@
+param:
+  - { id: account_id, name: 账户 }
+  - { id: market, name: 市场 }
+  - { id: instrument_fst, name: 合约1 }
+  - { id: instrument_sec, name: 合约2 }
+  - { id: max_entamt, name: 最大下单量 }
+  - { id: min_entamt, name: 最小下单量 }
+  - { id: unequal_wait_time, name: 风险敞口等待时间 }
+  - { id: offset_max_slippage, name: 反向平仓最大滑点 }
+  - { id: kline_window_size, name: K线窗口大小 }
+  - { id: fee, name: 手续费 }
+  - { id: expire_date, name: 策略结束时间(Ymd_HM) }
+indicator:
+  - { id: strat_status, name: 策略状态 }
+  - { id: fst_target_pos, name: 合约1目标仓位 }
+  - { id: fst_cur_pos, name: 合约1当前仓位 }
+  - { id: sec_target_pos, name: 合约2目标仓位 }
+  - { id: sec_cur_pos, name: 合约2当前仓位 }
+  - { id: upper, name: 布林上线 }
+  - { id: spread_bid_px, name: 买价差 }
+  - { id: average, name: 布林中线 }
+  - { id: spread_ask_px, name: 卖价差 }
+  - { id: lower, name: 布林下线 }

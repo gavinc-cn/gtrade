@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<table st_name="Balance" comment="资金表">
+    <fields>
+        <field name="ex_time" type="int64_t" comment="交易所时间(纳秒)" />
+        <field name="local_time" type="int64_t" comment="本地时间(纳秒)" />
+        <field name="datetime" type="DateTimeCs" comment="格式化时间" />
+        <field name="market" type="MarketCs" comment="市场" />
+        <field name="account_id" type="AccountIdCs" comment="账户ID" />
+        <field name="currency" type="CurrencyCs" comment="币种" />
+        <field name="available" type="double" comment="可用余额" />
+        <field name="frozen" type="double" comment="冻结余额" />
+        <field name="total" type="double" comment="总余额" />
+    </fields>
+
+    <indexes table_name="balance" comment="资金表">
+        <primary_key>
+            <field>market</field>
+            <field>account_id</field>
+            <field>currency</field>
+        </primary_key>
+        <index name="idx_account" type="index">
+            <field>account_id</field>
+        </index>
+    </indexes>
+
+    <options>
+    </options>
+
+</table>

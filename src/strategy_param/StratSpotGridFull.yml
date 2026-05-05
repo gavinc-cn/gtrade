@@ -1,0 +1,27 @@
+param:
+  - { id: account_id, name: 账户 }
+  - { id: market, name: 市场 }
+  - { id: instrument, name: 交易对 }
+  - { id: price_lower, name: 网格价格下限 }
+  - { id: price_upper, name: 网格价格上限 }
+  - { id: grid_count, name: 网格数量 }
+  - { id: grid_mode, name: 网格模式(a=等差/g=等比) }
+  - { id: invest_amount, name: 投入金额(USDT) }
+  - { id: take_profit_price, name: 止盈价格 }
+  - { id: stop_loss_price, name: 止损价格 }
+  - { id: max_single_order_amount, name: 单笔最大下单量 }
+  - { id: min_order_amount, name: 最小下单量 }
+  - { id: fee_rate, name: 手续费率 }
+  - { id: cancel_wait_ms, name: 撤单等待时间(ms) }
+  - { id: expire_date, name: 策略结束时间(Ymd_HM) }
+indicator:
+  - { id: strat_status, name: 策略状态 }
+  - { id: total_base_qty, name: 持有基础币数量 }
+  - { id: total_quote_qty, name: 持有计价币数量 }
+  - { id: pending_buy_count, name: 挂买单数量 }
+  - { id: pending_sell_count, name: 挂卖单数量 }
+  - { id: filled_buy_count, name: 已成交买单数量 }
+  - { id: filled_sell_count, name: 已成交卖单数量 }
+  - { id: realized_pnl, name: 已实现盈亏 }
+  - { id: unrealized_pnl, name: 未实现盈亏 }
+  - { id: last_price, name: 最新价格 }

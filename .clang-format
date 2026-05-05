@@ -1,0 +1,58 @@
+--- # YAML文档分隔符
+Language: Cpp # 指定此配置适用于C++文件
+BasedOnStyle: Google # 使用Google C++代码风格指南作为基础格式化样式
+AccessModifierOffset: -4 # 访问修饰符(public, private, protected)向左缩进4个空格
+AlignConsecutiveAssignments: false # 不对齐连续的赋值操作符
+AlignConsecutiveDeclarations: false # 不对齐连续的变量声明
+AlignOperands: true # 对齐二元和三元表达式中的操作数
+AlignTrailingComments: false # 不对齐连续行的尾随注释
+BraceWrapping: # 当BreakBeforeBraces为Custom时控制大括号的放置位置
+  AfterCaseLabel: false # case标签后不换行放置大括号
+  AfterClass: false # 类声明后不换行放置大括号
+  AfterControlStatement: false # if/for/while语句后不换行放置大括号
+  AfterEnum: false # 枚举声明后不换行放置大括号
+  AfterFunction: false # 函数声明后不换行放置大括号
+  AfterNamespace: false # 命名空间声明后不换行放置大括号
+  AfterStruct: false # 结构体声明后不换行放置大括号
+  AfterUnion: false # 联合体声明后不换行放置大括号
+  AfterExternBlock: false # extern "C"块后不换行放置大括号
+  BeforeCatch: false # catch语句前不换行放置大括号
+  BeforeElse: false # else语句前不换行放置大括号
+  BeforeLambdaBody: false # lambda函数体前不换行放置大括号
+  BeforeWhile: false # do-while循环中while前不换行放置大括号
+  SplitEmptyFunction: true # 空函数的闭合大括号换行
+  SplitEmptyRecord: true # 空类/结构体的闭合大括号换行
+  SplitEmptyNamespace: true # 空命名空间的闭合大括号换行
+BreakBeforeBraces: Custom # 使用上面定义的自定义大括号换行规则
+BreakConstructorInitializers: AfterColon # 在冒号后换行构造函数初始化列表
+BreakConstructorInitializersBeforeComma: false # 构造函数初始化器中不在逗号前换行
+ColumnLimit: 120 # 最大行长度为120个字符
+ConstructorInitializerAllOnOneLineOrOnePerLine: false # 允许构造函数初始化器正常换行
+ContinuationIndentWidth: 8 # 续行缩进8个空格
+IncludeBlocks: Preserve # 保持include块原样不重新排序
+IncludeCategories: # 定义include排序的分类
+  - Regex: '^<.*' # 系统头文件(尖括号)优先级为1
+    Priority: 1
+  - Regex: '^".*' # 本地头文件(引号)优先级为2
+    Priority: 2
+  - Regex: '.*' # 其他所有include优先级为3
+    Priority: 3
+IncludeIsMainRegex: '([-_](test|unittest))?$' # 识别主源文件的正则表达式
+IndentWidth: 4 # 使用4个空格进行缩进
+InsertNewlineAtEOF: true # 文件末尾总是添加换行符
+MacroBlockBegin: '' # 没有特殊的宏来开始块
+MacroBlockEnd: '' # 没有特殊的宏来结束块
+MaxEmptyLinesToKeep: 2 # 最多保留2行连续的空行
+NamespaceIndentation: All # 缩进命名空间内的所有内容
+PointerAlignment: Left # 指针左对齐(int* ptr, 而不是int *ptr)
+SpaceAfterCStyleCast: true # C风格强制转换后添加空格
+SpaceAfterTemplateKeyword: false # template关键字后不添加空格
+SpaceBeforeRangeBasedForLoopColon: false # 范围for循环中冒号前不添加空格
+SpaceInEmptyParentheses: false # 空括号内不添加空格
+SpacesBeforeTrailingComments: 1 # 尾随注释前添加1个空格
+SpacesInAngles: false # 尖括号内不添加空格
+SpacesInConditionalStatement: false # if/for/while语句的括号内不添加空格
+SpacesInCStyleCastParentheses: false # C风格强制转换括号内不添加空格
+SpacesInParentheses: false # 圆括号内不添加空格
+TabWidth: 4 # Tab宽度为4个空格
+... # YAML文档结束分隔符

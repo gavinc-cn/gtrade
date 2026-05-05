@@ -1,0 +1,2019 @@
+#include <filesystem>
+#include <dlfcn.h>
+#include <cstring>
+#include <boost/interprocess/shared_memory_object.hpp>
+#include "strategy_engine.h"
+#include "strategy_plugin.h"
+#include "strategy_checkpoint.h"
+#include "dict_mapping.h"
+#include "zrtools/zrt_compare.h"
+#include "i_strategy_engine_dump.h"
+#include "zrtools/zrt_define.h"
+#include "err_code.h"
+#include "type_define_dump.h"
+#include "i_timer_manager_dump.h"
+#include "okx_trade.h"
+#include "dummy_trade.h"
+#include "global.h"
+#include "my_utc.h"
+#include "OkexClient.h"
+#include "strategy_zmq_channel.h"
+
+// 策略通过自注册工厂加载，无需在此 include 各策略头文件
+#include "strategy_factory.h"
+
+bool StrategyEngine::Init() {
+    SPDLOG_INFO("{}", __PRETTY_FUNCTION__ );
+
+    // if (!m_gtrade_cfg.is_backtest) {
+    m_qry_srv = m_pool.at(k_QueryServer).get();
+    // }
+    m_timer_manager = m_pool.at(k_TimerManager).get();
+    // m_csv_quote = m_pool.at(k_CsvQuote).get();
+    m_msg_srv = m_pool.at(k_MessageServer).get();
+    m_mysql_gateway = m_pool.at(k_MySqlGateway).get();
+
+    m_kline_manager = std::make_unique<KLineManager>(m_gtrade_cfg, *this, dynamic_cast<QueryServer &>(*m_qry_srv));
+    
+    // 事件源管理器只在回测模式下初始化
+    if constexpr (!GlobalConst::IsRealTrading) {
+        m_event_source_manager = std::make_unique<EventSourceManager>(*this, m_gtrade_cfg);
+    }
+
+    InstallDefaultHandler(DefaultMsgHandler);
+
+    // 外发通知消息
+    ZRT_ADD_HANDLER(kNotifyMessage, StrategyEngine::OnNotifyMsg);
+
+    // 发往行情网关
+    ZRT_ADD_HANDLER(kStratSubscribeQuote, StrategyEngine::OnSubscribeQuote);
+    // 发往交易网关
+    ZRT_ADD_HANDLER(kStratSubscribeTrade, StrategyEngine::OnSubscribeTrade);
+    ZRT_ADD_HANDLER(kPlaceOrder, StrategyEngine::OnPlaceOrderReq);
+    ZRT_ADD_HANDLER(kCancelOrder, StrategyEngine::OnCancelOrderReq);
+
+    /// 发往策略
+    // 行情推送
+    ZRT_ADD_HANDLER(kDepth1, StrategyEngine::OnDepth1);
+    // 交易推送
+    ZRT_ADD_HANDLER(kPlaceOrderRsp, StrategyEngine::OnPlaceOrderRsp); // 未调用
+    ZRT_ADD_HANDLER(kCancelOrderRsp, StrategyEngine::OnCancelOrderRsp);
+    ZRT_ADD_HANDLER(kPlaceOrderConfirm, StrategyEngine::OnPlaceOrderConfirm);
+    ZRT_ADD_HANDLER(kOrderRecovery, StrategyEngine::OnOrderRecovery);  // websocket重连后的委托恢复
+    ZRT_ADD_HANDLER(kTradePush, StrategyEngine::OnTradePush);
+    ZRT_ADD_HANDLER(kPositionPush, StrategyEngine::OnPosPush);
+    ZRT_ADD_HANDLER(kBalancePush, StrategyEngine::OnBalancePush);
+    // 策略查询
+    ZRT_ADD_HANDLER(kQueryKLineReq, StrategyEngine::OnQueryKLineReq);
+    ZRT_ADD_HANDLER(kQueryOrderReq, StrategyEngine::OnHandleQueryServerReq);
+    ZRT_ADD_HANDLER(kQueryOrderByPrivateNoReq, StrategyEngine::OnQueryOrderByPrivateNoReq);
+    ZRT_ADD_HANDLER(kQueryMarketInfoReq, StrategyEngine::OnStratQueryMarketInfoReq);
+    // 查询服务应答
+    ZRT_ADD_HANDLER(kQueryMarketInfoRsp, StrategyEngine::OnQueryMarketInfoRsp);
+    ZRT_ADD_HANDLER(kQueryOrderRsp, StrategyEngine::OnQueryOrderRsp);
+    ZRT_ADD_HANDLER(kQueryTradeRsp, StrategyEngine::OnQueryTradeRsp);
+    ZRT_ADD_HANDLER(kQueryPositionRsp, StrategyEngine::OnQueryPosRsp);
+    ZRT_ADD_HANDLER(kQueryBalanceRsp, StrategyEngine::OnQueryBalanceRsp);
+    ZRT_ADD_HANDLER(kQueryKLinePatchRsp, StrategyEngine::OnQueryKLinePatchRsp);
+    ZRT_ADD_HANDLER(kQueryKLineRsp, StrategyEngine::OnQueryKLineRsp);
+    ZRT_ADD_HANDLER(kQueryHisOrdersRsp, StrategyEngine::OnQueryHisOrdersRsp);
+    // 定时器
+    ZRT_ADD_HANDLER(kTimerEvent, StrategyEngine::OnHandleTimerEvent);
+    // 控制消息
+    ZRT_ADD_HANDLER(kWebSocketOpenNotify, StrategyEngine::OnWebSocketOpenNotify);
+    ZRT_ADD_HANDLER(kSetTimer, StrategyEngine::OnSetTimer);
+    ZRT_ADD_HANDLER(kKillTimer, StrategyEngine::OnHandleKillTimerReq);
+    ZRT_ADD_HANDLER(kClearAllTimer, StrategyEngine::OnHandleClearAllTimerReq);
+    // 指标订阅
+    ZRT_ADD_HANDLER(kStratSubscribeKLine, StrategyEngine::OnSubscribeKLine);
+    ZRT_ADD_HANDLER(kStratSubscribeKLineOpen, StrategyEngine::OnSubscribeKLineOpen);
+    ZRT_ADD_HANDLER(kStratSubscribeKLineClose, StrategyEngine::OnSubscribeKLineClose);
+    // 指标推送
+    ZRT_ADD_HANDLER(kIndicatorKLinePush, StrategyEngine::OnIndicatorKlinePush);
+    ZRT_ADD_HANDLER(kIndicatorKLineOpenPush, StrategyEngine::OnIndicatorKlineOpenPush);
+    ZRT_ADD_HANDLER(kIndicatorKLineClosePush, StrategyEngine::OnIndicatorKlineClosePush);
+    // 策略请求
+    ZRT_ADD_HANDLER(kDbSetStrategyInfo, StrategyEngine::OnDbSetStrategyInfo);
+    ZRT_ADD_HANDLER(kDbSetStrategyLog, StrategyEngine::OnDbSetStrategyLog);
+
+    // 远程策略 ZMQ 事件（AcceptLoop 线程通过 PostMsg 投递到引擎线程）
+    ZRT_ADD_HANDLER(kRemoteStrategyConnected, StrategyEngine::OnRemoteStrategyConnected);
+    ZRT_ADD_HANDLER(kRemoteChannelB, StrategyEngine::OnRemoteChannelB);
+    ZRT_ADD_HANDLER(kRemoteSyncReq, StrategyEngine::OnRemoteSyncReq);
+
+    // 启动远程策略 ZMQ 接受器（仅当配置了 remote_engine_port 时）
+    if constexpr (GlobalConst::IsRealTrading) {
+        if (m_gtrade_cfg.remote_engine_port > 0) {
+            m_zmq_context = std::make_unique<zmq::context_t>(1 /*io_threads*/);
+            m_zmq_acceptor = std::make_unique<ZmqAcceptor>(
+                *m_zmq_context,
+                m_gtrade_cfg.remote_engine_port,
+                this);
+            m_zmq_acceptor->Start();
+            SPDLOG_INFO("StrategyEngine: ZmqAcceptor started on port {}",
+                        m_gtrade_cfg.remote_engine_port);
+        }
+    }
+
+    /// 同步接口
+    // 策略同步查询
+    ZRT_ADD_SYNC_HANDLER(kQueryMarketInfoSync, StrategyEngine::OnStratQueryMarketInfoSync);
+    // HTTP策略管理同步消息处理
+    ZRT_ADD_SYNC_HANDLER(kHttpAddStrategy, StrategyEngine::OnHttpAddStrategy);
+    ZRT_ADD_SYNC_HANDLER(kHttpDeleteStrategy, StrategyEngine::OnHttpDeleteStrategy);
+    ZRT_ADD_SYNC_HANDLER(kHttpRestartStrategy, StrategyEngine::OnHttpRestartStrategy);
+    ZRT_ADD_SYNC_HANDLER(kHttpStartStrategy, StrategyEngine::OnHttpStartStrategy);
+    ZRT_ADD_SYNC_HANDLER(kHttpStopStrategy, StrategyEngine::OnHttpStopStrategy);
+    ZRT_ADD_SYNC_HANDLER(kHttpQueryAllStrategies, StrategyEngine::OnHttpQueryAllStrategies);
+    ZRT_ADD_SYNC_HANDLER(kHttpQueryStrategiesByTemplate, StrategyEngine::OnHttpQueryStrategiesByTemplate);
+    ZRT_ADD_SYNC_HANDLER(kHttpGetTemplates, StrategyEngine::OnHttpGetTemplates);
+    ZRT_ADD_SYNC_HANDLER(kHttpGetTemplateConfig, StrategyEngine::OnHttpGetTemplateConfig);
+    // HTTP系统管理
+    ZRT_ADD_SYNC_HANDLER(kHttpSaveSnapshot, StrategyEngine::OnHttpSaveSnapshot);
+    ZRT_ADD_SYNC_HANDLER(kHttpGetWalStats, StrategyEngine::OnHttpGetWalStats);
+
+    return true;
+}
+
+void StrategyEngine::SetupUplUpdateTimer() {
+    // 设置策略持仓 UPL 定时更新（每 5 秒更新一次）
+    // 注：改为定时器触发而非每条行情触发，避免性能瓶颈
+    SetTimerReq upl_timer_req {};
+    zrt::fill_field(upl_timer_req.service_name, k_StrategyEngine);
+    zrt::fill_field(upl_timer_req.setter_id, k_StrategyEngine);
+    upl_timer_req.timer_id = TimerId::kTimer_UpdateUpl;  // UPL更新定时器ID
+    upl_timer_req.delay_ms = 5000;  // 5秒
+    upl_timer_req.repeat = true;    // 重复触发
+    m_timer_manager->PostMsg(kSetTimer, std::make_shared<TBuffer>(upl_timer_req));
+    SPDLOG_INFO("Set UPL update timer: interval={}ms", upl_timer_req.delay_ms);
+}
+
+void StrategyEngine::SetupMarketInfoRefreshTimer() const {
+    // 设置市场信息定时刷新（每 1 小时刷新一次）
+    // 用于定期从交易所更新可交易标的列表，确保本地缓存与交易所同步
+    if constexpr (!GlobalConst::IsRealTrading) {
+        SPDLOG_INFO("Market info refresh timer disabled in backtest mode");
+        return;
+    }
+    SetTimerReq market_info_timer_req {};
+    zrt::fill_field(market_info_timer_req.service_name, k_StrategyEngine);
+    zrt::fill_field(market_info_timer_req.setter_id, k_StrategyEngine);
+    market_info_timer_req.timer_id = TimerId::kTimer_RefreshMarketInfo;
+    market_info_timer_req.delay_ms = 3600'1000;  // 1小时
+    market_info_timer_req.repeat = true;
+    m_timer_manager->PostMsg(kSetTimer, std::make_shared<TBuffer>(market_info_timer_req));
+    SPDLOG_INFO("Set market info refresh timer: interval=1hour");
+}
+
+void StrategyEngine::LoadRecentOrdersFromDb() {
+    SPDLOG_INFO("Requesting to load recent entrusts from database (last {} days)", m_gtrade_cfg.entrust_maintain_days);
+    HisEntrustsQryReq req {};
+    zrt::fill_field(req.start_time, MyUTC().Epoch19() - m_gtrade_cfg.entrust_maintain_days * 3600 * 24 * zrt::kGiga);
+    zrt::fill_field(req.market, k_mysql);
+    BufPtr rsp_buf {};
+    m_mysql_gateway->PostSyncMsg(kDbQueryHisOrdersReq, std::make_shared<TBuffer>(req), rsp_buf);
+
+    rsp_buf->ForEach<Order>([this](const Order& entrust) {
+        SPDLOG_DEBUG("Received entrust from DB: entno={}, private_no={}, policy_no={}, status={}", entrust.entno, entrust.private_no, entrust.policy_no, entrust.status);
+        m_order_manager.RecoverOrder(entrust);
+    });
+    SPDLOG_INFO("Loaded {} historical entrusts from database", m_order_manager.GetOrderCount());
+
+    // 叠加共享内存中的数据（最新的未确认数据）
+    size_t shm_recovered = m_order_manager.RecoverFromShm();
+    SPDLOG_INFO("Overlayed {} uncommitted entrusts/dones from shared memory", shm_recovered);
+
+    // 打印持久化统计信息
+    const OrderManager::PersistenceStats stats = m_order_manager.GetPersistenceStats();
+    SPDLOG_INFO("Persistence stats - Entrust: write_seq={}, confirmed_seq={}, unconfirmed={}", stats.order_write_seq, stats.order_confirmed_seq, stats.order_unconfirmed);
+    SPDLOG_INFO("Persistence stats - Done: write_seq={}, confirmed_seq={}, unconfirmed={}",
+                stats.trade_write_seq, stats.trade_confirmed_seq, stats.trade_unconfirmed);
+    SPDLOG_INFO("Historical entrust loading completed, total entrusts in m_order_manager: {}", m_order_manager.GetOrderCount());
+}
+
+bool StrategyEngine::Start() {
+    SPDLOG_INFO("");
+
+    // 清空strat_info表，准备重新加载策略信息
+    SPDLOG_INFO("Clearing strat_info table before loading strategies");
+    StrategyInfo dummy_info {};
+    m_mysql_gateway->PostMsg(kDbDelAllStrategyInfo, std::make_shared<TBuffer>(dummy_info));
+
+    // 实盘模式：先从共享内存加载策略（恢复之前运行的策略），然后加载配置文件中的策略
+    // 回测模式：从配置文件加载策略
+    if constexpr (GlobalConst::IsRealTrading) {
+        LoadStrategiesFromShm();
+    }
+    // 加载配置文件中的策略（如果策略ID已存在，LoadSingleStrategyFromFile会跳过）
+    SPDLOG_INFO("Loading strategies from config files");
+    LoadStrategyCfgFromFile();
+
+    // 初始化并启动事件源管理器（仅回测模式） - 必须在策略启动之前
+    if constexpr (GlobalConst::IsBackTest) {
+        if (!m_event_source_manager->Initialize()) {
+            SPDLOG_ERROR("Failed to initialize EventSourceManager");
+            return false;
+        }
+
+        if (!m_event_source_manager->Start()) {
+            SPDLOG_ERROR("Failed to start EventSourceManager");
+            return false;
+        }
+    }
+    // 实盘模式：从数据库加载7天内委托并查询最新状态（在启动策略之前）
+    else {
+        LoadRecentOrdersFromDb();
+        RefreshAllMarketInfo(true);
+    }
+
+    // 启动策略 - 策略启动时可能会立即订阅事件源
+    for (const auto& p: m_strategy_proxy_map) {
+        p.second->Start();
+        SPDLOG_INFO("strat={} started", p.first);
+    }
+
+    // if (m_gtrade_cfg.is_backtest) {
+    //     int64_t bt_epoch = MyUTC(m_gtrade_cfg.start_date, BACKTEST_TIME_FORMAT).Epoch19();
+    //     int64_t end_epoch = MyUTC(m_gtrade_cfg.end_date, BACKTEST_TIME_FORMAT).Epoch19();
+    //     while (true) {
+    //         TimeMachine::GetInstance().SetEpoch(bt_epoch);
+    //         const auto buf = std::make_shared<TBuffer>();
+    //         buf->Append(bt_epoch);
+    //         m_csv_quote->PostMsg(kCsvQuoteTimerEvent, buf);
+    //         bt_epoch += m_gtrade_cfg.backtest_interval * zrt::kGiga;
+    //         if (bt_epoch > end_epoch) {
+    //             break;
+    //         }
+    //     }
+    // }
+
+    if constexpr (GlobalConst::IsRealTrading) {
+        // 设置 UPL 定时更新（改为定时器触发而非每条行情触发，性能优化）
+        SetupUplUpdateTimer();
+        // 设置市场信息定时刷新（每小时刷新一次，仅实盘模式）
+        SetupMarketInfoRefreshTimer();
+    } else {
+        // 使用事件源管理器进行回测
+        // 这将自动处理所有事件源的时间推进和事件分发
+        m_event_source_manager->RunBacktest();
+        SPDLOG_INFO("Backtest completed via EventSourceManager");
+        GlobalControl::is_running = false;
+    }
+    return true;
+}
+
+void StrategyEngine::Stop() {
+    SPDLOG_INFO("stopping all strategies");
+    for (const auto& [strat_id, strat_ptr] : m_strategy_proxy_map) {
+        strat_ptr->Stop();
+        SPDLOG_INFO("strat={} stopped", strat_id);
+    }
+}
+
+void StrategyEngine::OnDefaultMsg(int msg_id, const BufPtr buffer) {
+    SPDLOG_INFO("{}", msg_id);
+}
+
+void StrategyEngine::OnDefaultSyncMsg(int msg_id, const BufPtr buffer, std::promise<BufPtr >& ret) {
+    SPDLOG_INFO("{}", msg_id);
+    // ret.set_value(__FUNCTION__ );
+}
+
+std::shared_ptr<StrategyBase> StrategyEngine::LoadStrategyFromSo(
+    const std::string& so_path,
+    const std::string& strat_id)
+{
+    // 解析路径：相对路径以可执行文件目录为基准
+    std::filesystem::path resolved_path = so_path;
+    if (resolved_path.is_relative()) {
+        std::error_code ec;
+        const auto exe_dir = std::filesystem::read_symlink("/proc/self/exe", ec).parent_path();
+        if (ec) {
+            SPDLOG_ERROR("LoadStrategyFromSo: failed to read /proc/self/exe: {}", ec.message());
+            return nullptr;
+        }
+        resolved_path = exe_dir / so_path;
+    }
+
+    SPDLOG_INFO("LoadStrategyFromSo: loading plugin from {}", resolved_path.string());
+
+    // 加载 .so
+    // RTLD_LAZY  : 延迟解析符号，加快加载速度
+    // RTLD_GLOBAL: 使 .so 中对主进程符号（StrategyBase vtable、EnginePool 单例等）的
+    //              未定义引用从主进程全局符号表解析（-rdynamic 保证符号可见），避免 ODR 违规
+    void* handle = dlopen(resolved_path.c_str(), RTLD_LAZY | RTLD_GLOBAL);
+    if (!handle) {
+        SPDLOG_ERROR("LoadStrategyFromSo: dlopen failed for {}: {}", resolved_path.string(), dlerror());
+        return nullptr;
+    }
+
+    // 清除历史错误状态，dlsym 返回 nullptr 可能是合法的，必须用 dlerror() 区分
+    dlerror();
+
+    // 校验构建模式（0=实盘，1=回测），防止误装载
+    using GetBuildModeFunc = int (*)();
+    auto get_mode = reinterpret_cast<GetBuildModeFunc>(dlsym(handle, "gtrade_get_build_mode"));
+    const char* dl_err = dlerror();
+    if (dl_err != nullptr) {
+        SPDLOG_ERROR("LoadStrategyFromSo: dlsym(gtrade_get_build_mode) failed: {}", dl_err);
+        dlclose(handle);
+        return nullptr;
+    }
+    const int expected_mode = GlobalConst::IsRealTrading ? 0 : 1;
+    const int actual_mode   = get_mode();
+    if (actual_mode != expected_mode) {
+        SPDLOG_ERROR("LoadStrategyFromSo: build mode mismatch in {}: expected={} got={}",
+                     resolved_path.string(), expected_mode, actual_mode);
+        dlclose(handle);
+        return nullptr;
+    }
+
+    // 获取工厂函数
+    dlerror();
+    auto factory = reinterpret_cast<GTradeStrategyFactory>(dlsym(handle, "gtrade_create_strategy"));
+    dl_err = dlerror();
+    if (dl_err != nullptr) {
+        SPDLOG_ERROR("LoadStrategyFromSo: dlsym(gtrade_create_strategy) failed: {}", dl_err);
+        dlclose(handle);
+        return nullptr;
+    }
+
+    // 调用工厂创建策略实例
+    StrategyBase* raw_ptr = factory(m_gtrade_cfg, this, strat_id);
+    if (raw_ptr == nullptr) {
+        SPDLOG_ERROR("LoadStrategyFromSo: factory returned nullptr for strat_id={}", strat_id);
+        dlclose(handle);
+        return nullptr;
+    }
+
+    SPDLOG_INFO("LoadStrategyFromSo: plugin loaded ok, strat_id={}", strat_id);
+
+    // 包装为 shared_ptr，自定义 deleter 保证析构顺序：
+    //   先 delete ptr（执行析构函数，清理 std::function 等持有的回调）
+    //   再 dlclose （卸载 .so 代码段，此时已无任何代码引用）
+    // 顺序不能反转，否则析构时会访问已卸载的代码段导致段错误
+    return std::shared_ptr<StrategyBase>(raw_ptr, [handle, strat_id](StrategyBase* p) {
+        SPDLOG_INFO("LoadStrategyFromSo: unloading plugin for strat_id={}", strat_id);
+        delete p;
+        dlclose(handle);
+    });
+}
+
+bool StrategyEngine::LoadSingleStrategyFromFile(const std::string& strat_cfg_path) {
+    SPDLOG_INFO("load strategy from file: {}", strat_cfg_path);
+    try {
+        YAML::Node strat_yml = YAML::LoadFile(strat_cfg_path);
+        // 策略ID从文件名提取（去掉.yml后缀）
+        std::string strat_id = std::filesystem::path(strat_cfg_path).stem();
+        // Python 策略不需要 strat_template_id（通过 python_file 字段区分）
+        const std::string strat_template_id =
+            strat_yml[k_strat_template_id] ? strat_yml[k_strat_template_id].as<std::string>() : "";
+
+        // 按策略ID判断是否已存在（不再按配置文件路径判断）
+        if (m_strategy_proxy_map.count(strat_id)) {
+            SPDLOG_WARN("strategy with id={} already exists, cannot add duplicate", strat_id);
+            return false;
+        }
+
+        bool loaded = false;
+
+        // 解析公共子进程配置（so_path subprocess 路径和 python_file 路径均使用）
+        auto parse_subprocess_config = [&]() {
+            SubprocessConfig sp_cfg{};
+            if (strat_yml[k_subprocess_auto_restart])
+                sp_cfg.auto_restart = strat_yml[k_subprocess_auto_restart].as<bool>();
+            if (strat_yml[k_subprocess_restore_checkpoint])
+                sp_cfg.restore_checkpoint = strat_yml[k_subprocess_restore_checkpoint].as<bool>();
+            if (strat_yml[k_subprocess_max_restart_count])
+                sp_cfg.max_restart_count = strat_yml[k_subprocess_max_restart_count].as<int>();
+            if (strat_yml[k_subprocess_restart_interval_ms])
+                sp_cfg.restart_interval_ms = strat_yml[k_subprocess_restart_interval_ms].as<int>();
+            if (strat_yml[k_subprocess_heartbeat_timeout_ms])
+                sp_cfg.heartbeat_timeout_ms = strat_yml[k_subprocess_heartbeat_timeout_ms].as<int>();
+            return sp_cfg;
+        };
+
+        // python_file 字段存在 → Python 子进程策略（OutProcessProxy + Python runner）
+        if (strat_yml[k_python_file]) {
+#ifdef __linux__
+            // ── Python 子进程路径 ────────────────────────────────────────────────
+            SubprocessConfig sp_cfg = parse_subprocess_config();
+            sp_cfg.runner_type = SubprocessConfig::RunnerType::Python;
+            if (strat_yml[k_python_interpreter])
+                sp_cfg.python_interpreter = strat_yml[k_python_interpreter].as<std::string>();
+            if (strat_yml[k_python_class])
+                sp_cfg.python_class = strat_yml[k_python_class].as<std::string>();
+
+            if (sp_cfg.python_class.empty()) {
+                SPDLOG_ERROR("LoadSingleStrategyFromFile: python_class is required when "
+                             "python_file is set, strat={}", strat_id);
+                return false;
+            }
+
+            OutProcessProxyConfig op_cfg{};
+            op_cfg.strat_cfg_path = strat_cfg_path;
+            op_cfg.subprocess     = sp_cfg;
+
+            auto proxy = std::make_unique<OutProcessProxy>(
+                strat_id, StrategyInfo{}, std::move(op_cfg), this);
+            if (!proxy->Init(strat_yml)) {
+                SPDLOG_ERROR("OutProcessProxy::Init (Python) failed for strat={}", strat_id);
+                return false;
+            }
+            m_strategy_proxy_map.emplace(strat_id, std::move(proxy));
+            loaded = true;
+#else
+            SPDLOG_ERROR("python_file strategy is only supported on Linux, strat={}", strat_id);
+            return false;
+#endif
+        }
+        // 优先检查 so_path 字段：存在则走动态插件加载路径，无需修改引擎代码
+        else if (strat_yml[k_so_path]) {
+            // 检查隔离模式（默认 inprocess）
+            const std::string isolation =
+                strat_yml[k_isolation] ? strat_yml[k_isolation].as<std::string>() : "inprocess";
+
+            if (isolation == "subprocess") {
+#ifdef __linux__
+                // ── C++ 子进程隔离路径 ─────────────────────────────────────────
+                SubprocessConfig sp_cfg = parse_subprocess_config();
+
+                OutProcessProxyConfig op_cfg{};
+                op_cfg.strat_cfg_path = strat_cfg_path;
+                op_cfg.subprocess     = sp_cfg;
+
+                auto proxy = std::make_unique<OutProcessProxy>(
+                    strat_id, StrategyInfo{}, std::move(op_cfg), this);
+                if (!proxy->Init(strat_yml)) {
+                    SPDLOG_ERROR("OutProcessProxy::Init failed for strat={}", strat_id);
+                    return false;
+                }
+                m_strategy_proxy_map.emplace(strat_id, std::move(proxy));
+                loaded = true;
+#else
+                SPDLOG_ERROR("isolation=subprocess is only supported on Linux, strat={}", strat_id);
+                return false;
+#endif
+            } else {
+                // ── 进程内路径（默认）─────────────────────────────────────────
+                const std::string so_path = strat_yml[k_so_path].as<std::string>();
+                auto strat_ptr = LoadStrategyFromSo(so_path, strat_id);
+                if (!strat_ptr) {
+                    return false;
+                }
+                loaded = LoadStrategy(strat_id, strat_ptr, strat_yml);
+            }
+        }
+        else if (StrategyFactory::Contains(strat_template_id)) {
+            // 已通过自注册机制注册的策略，由工厂统一创建
+            auto strat_ptr = StrategyFactory::Create(strat_template_id, m_gtrade_cfg, this, strat_id);
+            loaded = LoadStrategy(strat_id, strat_ptr, strat_yml);
+            LOG_INFO("load {} {} from factory", strat_template_id, strat_id);
+        }
+        else {
+            SPDLOG_ERROR("strat_template_id={} not found in config={}", strat_template_id, strat_cfg_path);
+            return false;
+        }
+
+        if (loaded) {
+            // 记录策略的配置文件路径
+            m_strategy_cfg_path_map[strat_id] = strat_cfg_path;
+            // 记录策略的模板ID
+            m_strategy_template_map[strat_id] = strat_template_id;
+            // 将策略添加到模板的策略集合中
+            m_template_strategy_map[strat_template_id].insert(strat_id);
+        }
+        return loaded;
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("load strategy config={} failed: {}", strat_cfg_path, e.what());
+        return false;
+    }
+}
+
+bool StrategyEngine::LoadStrategyCfgFromFile() {
+    for (const auto& strat_cfg_path: m_gtrade_cfg.strat_cfg_path_vec) {
+        LoadSingleStrategyFromFile(strat_cfg_path);
+    }
+    return true;
+}
+
+void StrategyEngine::LoadStrategiesFromShm() {
+    // 共享内存检查点的前缀
+    constexpr std::string_view kCheckpointPrefix = "gtrade_strategy_checkpoint_";
+    constexpr std::string_view kShmDir = "/dev/shm/";
+
+    // 使用 gtrade 运行目录同级的 strategy_config 目录
+    const std::string config_dir = k_strategy_config;
+
+    if (!std::filesystem::exists(config_dir)) {
+        SPDLOG_WARN("Strategy config directory not found: {}", config_dir);
+        return;
+    }
+
+    SPDLOG_INFO("Strategy config directory: {}", config_dir);
+
+    // 扫描 /dev/shm/ 目录，找到所有检查点文件
+    // 系统启动时不捕获异常，有错误直接报错退出，便于快速发现错误
+    std::vector<std::string> strat_ids_from_shm {};
+
+    for (const auto& entry : std::filesystem::directory_iterator(kShmDir)) {
+        if (!entry.is_regular_file()) {
+            continue;
+        }
+
+        const std::string filename = entry.path().filename().string();
+        // 检查是否是策略检查点文件
+        if (filename.rfind(kCheckpointPrefix, 0) == 0) {
+            // 提取策略ID（去掉前缀）
+            std::string strat_id = filename.substr(kCheckpointPrefix.size());
+            strat_ids_from_shm.push_back(strat_id);
+            SPDLOG_INFO("Found strategy checkpoint in shm: {}", strat_id);
+        }
+    }
+
+    if (strat_ids_from_shm.empty()) {
+        SPDLOG_INFO("No strategy checkpoints found in shm");
+        return;
+    }
+
+    SPDLOG_INFO("Found {} strategy checkpoints in shm", strat_ids_from_shm.size());
+
+    // 为每个策略ID查找配置文件并加载
+    for (const auto& strat_id : strat_ids_from_shm) {
+        // 构建配置文件路径: strategy_config/<strat_id>.yml
+        std::filesystem::path cfg_path = std::filesystem::path(config_dir) / (strat_id + ".yml");
+
+        if (std::filesystem::exists(cfg_path)) {
+            SPDLOG_INFO("Found config file for strategy={}: {}", strat_id, cfg_path.string());
+            LoadSingleStrategyFromFile(cfg_path.string());
+        } else {
+            // 配置文件不存在，不加载该策略，仅输出错误日志
+            SPDLOG_ERROR("Config file not found for strategy={}: {}, skipping", strat_id, cfg_path.string());
+        }
+    }
+}
+
+void StrategyEngine::OnNotifyMsg(int msg_id, const BufPtr buffer) const {
+    m_msg_srv->PostMsg(kNotifyMessage, buffer);
+}
+
+void StrategyEngine::OnSubscribeQuote(int msg_id, const BufPtr buffer) {
+    const QuoteSub quote_sub = *reinterpret_cast<const QuoteSub*>(buffer->Data());
+    m_quote_sub_map[{quote_sub.channel,quote_sub.market,quote_sub.inst_id}].emplace(quote_sub.strat_id);
+    SPDLOG_INFO("{} sub_cnt={}", zrt::to_str(quote_sub), m_quote_sub_map.size());
+    // 实盘
+    if constexpr (GlobalConst::IsRealTrading) {
+        if (zrt::equal(quote_sub.market, k_okx)) {
+            m_pool.at(k_OkxQuote)->PostMsg(kStratSubscribeQuote, buffer);
+        }
+        else if (zrt::equal(quote_sub.market, k_okx_dummy)) {
+            m_pool.at(k_OkxDummyQuote)->PostMsg(kStratSubscribeQuote, buffer);
+        }
+        else {
+            SPDLOG_ERROR("market={} not supported", quote_sub.market);
+        }
+    }
+    // 回测
+    else {
+        // m_pool.at(k_CsvQuote)->PostMsg(kStratSubscribeQuote, buffer);
+        m_event_source_manager->SubscribeDepth({quote_sub.market, quote_sub.inst_id});
+    }
+}
+
+bool StrategyEngine::EnsureTradeGateway(const std::string& market, const std::string& account_id) {
+    if constexpr (GlobalConst::IsRealTrading) {
+        if (!m_trade_gw_map.count(account_id)) {
+            // okx和okx_dummy都使用OkxTrade, URL由account的market字段决定
+            if (zrt::equal_any_of(market, k_okx, k_okx_dummy)) {
+                m_trade_gw_map.emplace(account_id, std::make_shared<OkxTrade>(m_gtrade_cfg, account_id, *this));
+                m_trade_gw_map.at(account_id)->Init();
+                m_trade_gw_map.at(account_id)->Start();
+                SPDLOG_INFO("create trade_gateway {} for market={}", account_id, market);
+            } else {
+                SPDLOG_ERROR("market={} not supported", market);
+                return false;
+            }
+        }
+    }
+    else {
+        if (!m_trade_gw_map.count(k_DummyTrade)) {
+            m_trade_gw_map.emplace(k_DummyTrade, std::make_shared<DummyTrade>(m_gtrade_cfg, k_DummyTrade, *this));
+            m_trade_gw_map.at(k_DummyTrade)->Init();
+            m_trade_gw_map.at(k_DummyTrade)->Start();
+            SPDLOG_INFO("create trade_gateway {}", k_DummyTrade);
+        }
+    }
+    return true;
+}
+
+void StrategyEngine::OnSubscribeTrade(int msg_id, const BufPtr buffer) {
+    const TradeSub trade_sub = buffer->RefData<TradeSub>();
+    SPDLOG_INFO("{}", zrt::to_str(trade_sub));
+    m_trade_sub_map[trade_sub.account_id][trade_sub.inst_id].emplace(trade_sub.strat_id);
+    if (!EnsureTradeGateway(trade_sub.market, trade_sub.account_id)) {
+        SPDLOG_ERROR("create trade gateway failed, market={}, account={}", trade_sub.market, trade_sub.account_id);
+        return;
+    }
+    const std::string account_id = [&trade_sub]() {
+        if constexpr (GlobalConst::IsRealTrading) {
+            return trade_sub.account_id;
+        } else {
+            return k_DummyTrade;
+        }
+    }();
+    // okx会自动订阅所有的标的, 不用主动订阅, 有其他交易所再视情况主动订阅
+    // m_trade_gw_map.at(account_id)->PostMsg(kStratSubscribeTrade, buffer);
+
+    if constexpr (GlobalConst::IsRealTrading) {
+        if (m_market_info_status[trade_sub.market] == DataStatus::kNotReady) {
+            for (const auto& d: {InstType::Spot, InstType::Margin, InstType::Swap, InstType::Futures, InstType::Option}) {
+                MarketInfoQryReq req {};
+                zrt::fill_field(req.market, trade_sub.market);
+                zrt::fill_field(req.account_id, trade_sub.account_id);
+                zrt::fill_field(req.inst_type, d);
+                m_qry_srv->PostMsg(kQueryMarketInfoReq, std::make_shared<TBuffer>(req));
+            }
+            m_market_info_status[trade_sub.market] = DataStatus::kReqSent;
+        }
+
+        if (m_balance_status[trade_sub.account_id] == DataStatus::kNotReady) {
+            BalanceQryReq req {};
+            zrt::fill_field(req.market, trade_sub.market);
+            zrt::fill_field(req.account_id, trade_sub.account_id);
+            m_qry_srv->PostMsg(kQueryBalanceReq, std::make_shared<TBuffer>(req));
+            m_balance_status[trade_sub.account_id] = DataStatus::kReqSent;
+        }
+
+        if (m_pos_status[trade_sub.account_id] == DataStatus::kNotReady) {
+            HoldQryReq req {};
+            zrt::fill_field(req.market, trade_sub.market);
+            zrt::fill_field(req.account_id, trade_sub.account_id);
+            m_qry_srv->PostMsg(kQueryPositionReq, std::make_shared<TBuffer>(req));
+            m_pos_status[trade_sub.account_id] = DataStatus::kReqSent;
+        }
+
+        // 报盘会在登录的时候主动查询, 这里不用查询
+        // if (m_entrust_status[trade_sub.account_id] == DataStatus::kNotReady) {
+        //     for (const auto& d: {InstType::Spot, InstType::Margin, InstType::Swap, InstType::Futures, InstType::Option}) {
+        //         EntrustQryReq req {};
+        //         zrt::fill_field(req.market, trade_sub.market);
+        //         zrt::fill_field(req.account_id, trade_sub.account_id);
+        //         zrt::fill_field(req.inst_type, DictInstType2Okx(d));
+        //         m_qry_srv->PostMsg(kQueryEntrustReq, std::make_shared<TBuffer>(req));
+        //     }
+        //     m_entrust_status[trade_sub.account_id] = DataStatus::kReqSent;
+        // }
+    }
+}
+
+void StrategyEngine::FillNewEntByReq(Order& dst, const OrderReq& src) {
+    zrt::fill_field(dst.market, src.market);
+    zrt::fill_field(dst.account_id, src.account_id);
+    zrt::fill_field(dst.inst_id, src.inst_id);
+    zrt::fill_field(dst.inst_id_code, src.inst_id_code);
+    zrt::fill_field(dst.policy_no, src.policy_no);
+    zrt::fill_field(dst.private_no, src.private_no);
+    zrt::fill_field(dst.bs_side, src.bs_side);
+    zrt::fill_field(dst.pos_side, src.pos_side);
+    zrt::fill_field(dst.oc_side, src.oc_side);
+    zrt::fill_field(dst.trade_mode, src.trade_mode);
+    zrt::fill_field(dst.price_type, src.price_type);
+    zrt::fill_field(dst.price, src.price);
+    zrt::fill_field(dst.amount, src.amount);
+    zrt::fill_field(dst.expire_time, src.expire_time);
+    zrt::fill_field(dst.ent_time, src.ent_time);
+    zrt::fill_field(dst.fmt_time, MyUTC(dst.ent_time, 19).GetYmdHMS());
+    // 特殊处理
+    zrt::fill_field(dst.entno, OrderManager::CreateOrderId());
+    // 先置为废单, 如果发出去就改为正报
+    zrt::fill_field(dst.status, OrderStatus::_9);
+    zrt::fill_field(dst.remain, src.amount);
+    zrt::fill_field(dst.update_time, src.ent_time);
+    zrt::fill_field(dst.source, OrderSource::Local);
+    zrt::fill_field(dst.portfolio, zrt::is_empty(src.portfolio) ? src.policy_no : src.portfolio);
+}
+
+void StrategyEngine::FillOrderByOrder(Order& dst, const Order& src) {
+    zrt::fill_field(dst.status, src.status);
+    zrt::fill_field(dst.filled, src.filled);
+    zrt::fill_field(dst.filled_px, src.filled_px);
+    zrt::fill_field(dst.confirm_time, src.confirm_time);
+    zrt::fill_field(dst.filled_time, src.filled_time);
+    zrt::fill_field(dst.update_time, src.update_time);
+    zrt::fill_field(dst.source, src.source);
+    zrt::fill_field(dst.err_code, src.err_code);
+    zrt::fill_field(dst.err_msg, src.err_msg);
+    if (dst.err_code) {
+        zrt::fill_field(dst.status, OrderStatus::_9);
+    }
+    if (!src.remain) {
+        zrt::fill_field(dst.remain, dst.amount - src.filled - src.draw_amt);
+    }
+    switch (src.status) {
+        case OrderStatus::_2: {
+            zrt::fill_field(dst.confirm_time, src.confirm_time);
+        } break;
+        case OrderStatus::_6: {
+            zrt::fill_field(dst.withdraw_time, src.withdraw_time);
+            zrt::fill_field(dst.drawno, src.drawno);
+            zrt::fill_field(dst.draw_amt, src.draw_amt);
+        } break;
+        case OrderStatus::_4:
+        case OrderStatus::_3: {
+            zrt::fill_field(dst.filled_time, src.filled_time);
+        } break;
+        default:
+            break;
+    }
+}
+
+// 自动开平仓
+bool StrategyEngine::FillSide(Order& order, const std::string_view account_id, const std::string_view instrument, const char trade_mode, const char pos_side, const double entamt) {
+    if (!order.bs_side) {
+        SPDLOG_ERROR("bs_side is required");
+        return false;
+    }
+    if (!order.oc_side && !order.pos_side) {
+        const Position& hold = m_order_manager.GetPos(account_id, instrument, trade_mode, pos_side);
+        if (zrt::greater_equal(hold.available, entamt)) {
+            zrt::fill_field(order.oc_side, PosEffect::Close);
+        }
+        else {
+            zrt::fill_field(order.oc_side, PosEffect::Open);
+        }
+    }
+    if (order.bs_side == TradeSide::Buy) {
+        if (!order.pos_side) {
+            zrt::fill_field(order.pos_side, order.oc_side == PosEffect::Open ? PosSide::Long : PosSide::Short);
+        }
+        else if (!order.oc_side) {
+            zrt::fill_field(order.oc_side, order.pos_side == PosSide::Long ? PosEffect::Open : PosEffect::Close);
+        }
+        else {
+            if (order.oc_side == PosEffect::Open && order.pos_side != PosSide::Long) {
+                return false;
+            }
+            else if (order.oc_side == PosEffect::Close && order.pos_side != PosSide::Short) {
+                return false;
+            }
+        }
+    }
+    else if (order.bs_side == TradeSide::Sell) {
+        if (!order.pos_side) {
+            zrt::fill_field(order.pos_side, order.oc_side == PosEffect::Open ? PosSide::Short : PosSide::Long);
+        }
+        else if (!order.oc_side) {
+            zrt::fill_field(order.oc_side, order.pos_side == PosSide::Long ? PosEffect::Close : PosEffect::Open);
+        }
+        else {
+            if (order.oc_side == PosEffect::Open && order.pos_side != PosSide::Short) {
+                return false;
+            }
+            else if (order.oc_side == PosEffect::Close && order.pos_side != PosSide::Long) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// 自动开平仓
+bool StrategyEngine::FillSide(Order& order) {
+    if (ZRT_UNLIKELY(zrt::is_empty(order.bs_side))) {
+        SPDLOG_ERROR("bs_side is required");
+        return false;
+    }
+    if (ZRT_LIKELY(!zrt::is_empty(order.pos_side) ||
+        zrt::equal(order.trade_mode, TradeMode::Cash))) {
+        return true;
+    }
+    if (zrt::equal_any_of(order.market, k_okx, k_okx_dummy)) {
+        zrt::fill_field(order.pos_side, PosSide::Net);
+        return true;
+    }
+    switch (order.bs_side) {
+        case TradeSide::Buy: {
+            if (const Position& hold = m_order_manager.GetPos(order.account_id, order.inst_id, order.trade_mode, PosSide::Short);
+                zrt::greater_equal(hold.available, order.amount))
+            {
+                zrt::fill_field(order.pos_side, PosSide::Short);
+            } else {
+                zrt::fill_field(order.pos_side, PosSide::Long);
+            }
+        } break;
+        case TradeSide::Sell: {
+            if (const Position& hold = m_order_manager.GetPos(order.account_id, order.inst_id, order.trade_mode, PosSide::Long);
+                zrt::greater_equal(hold.available, order.amount))
+            {
+                zrt::fill_field(order.pos_side, PosSide::Long);
+            } else {
+                zrt::fill_field(order.pos_side, PosSide::Short);
+            }
+        } break;
+        default: {
+            SPDLOG_ERROR("unexpected trade_side({})", order.bs_side);
+        } break;
+    }
+    return true;
+}
+
+void StrategyEngine::OnPlaceOrderReq(int msg_id, const BufPtr buffer) {
+    const auto& recv_data = buffer->RefData<OrderReq>();
+#ifdef GTRADE_ENABLE_LATENCY_TEST
+    SPDLOG_TRACE("[TT] engine_ent_in={}us", (zrt::get_monotonic19() - recv_data.quote_monotonic) / 1000);
+#endif
+    SPDLOG_INFO("EntrustReq={}", zrt::to_str(recv_data));
+
+    Order new_entrust {};
+    FillNewEntByReq(new_entrust, recv_data);
+    Order* entrust {};
+    do {
+        entrust = m_order_manager.AddOrder(new_entrust);
+        if (!entrust) {
+            // 插不进去也要发废单
+            entrust = &new_entrust;
+            constexpr std::string_view err_msg = "add order failed";
+            zrt::fill_field(entrust->err_code, -1);
+            zrt::fill_field(entrust->err_msg, err_msg);
+            SPDLOG_ERROR("{}: {}", err_msg, zrt::to_str(*entrust));
+            break;
+        }
+
+        if (zrt::is_empty(entrust->market) ||
+            zrt::is_empty(entrust->account_id) ||
+            zrt::is_empty(entrust->inst_id) ||
+            zrt::is_empty(entrust->policy_no) ||
+            zrt::is_empty(entrust->trade_mode) ||
+            zrt::is_empty(entrust->bs_side) ||
+            zrt::is_empty(entrust->amount))
+        {
+            constexpr std::string_view err_msg = "insufficient param";
+            zrt::fill_field(entrust->err_code, -1);
+            zrt::fill_field(entrust->err_msg, err_msg);
+            SPDLOG_ERROR("{}: {}", err_msg, zrt::to_str(*entrust));
+            break;
+        }
+
+        if (!FillSide(*entrust)) {
+            constexpr std::string_view err_msg = "FillSide failed";
+            zrt::fill_field(entrust->err_code, -1);
+            zrt::fill_field(entrust->err_msg, err_msg);
+            SPDLOG_ERROR("{}: {}", err_msg, zrt::to_str(*entrust));
+            break;
+        }
+
+        if (EnsureTradeGateway(entrust->market, entrust->account_id)) {
+            const std::string account_id = [&entrust]() {
+                if constexpr (GlobalConst::IsRealTrading) {
+                    return entrust->account_id;
+                } else {
+                    return k_DummyTrade;
+                }
+            }();
+            zrt::fill_field(entrust->status, OrderStatus::_1);
+            m_trade_gw_map.at(account_id)->PostMsg(kPlaceOrder, std::make_shared<TBuffer>(*entrust));
+#ifdef GTRADE_ENABLE_LATENCY_TEST
+            SPDLOG_TRACE("[TT] engine_ent_out={}us", (zrt::get_monotonic19() - new_entrust.quote_monotonic) / 1000);
+#endif
+        } else {
+            constexpr std::string_view err_msg = "create trade gateway failed";
+            zrt::fill_field(entrust->err_code, -1);
+            zrt::fill_field(entrust->err_msg, err_msg);
+            SPDLOG_ERROR("{}: {}", err_msg, zrt::to_str(*entrust));
+            break;
+        }
+        return;
+    } while (false);
+
+    // 能走到这里的状态都是废单
+    SendToStrategy(kPlaceOrderConfirm, std::make_shared<TBuffer>(*entrust), entrust->policy_no);
+}
+
+void StrategyEngine::OnPlaceOrderRsp(int msg_id, const BufPtr buffer) {
+    auto recv_data = *reinterpret_cast<const Order*>(buffer->Data());
+    SPDLOG_INFO("Entrust={}", zrt::to_str(recv_data));
+    Order* entrust = m_order_manager.FindLocalOrder(recv_data);
+    if (ZRT_UNLIKELY(!entrust)) {
+        SPDLOG_ERROR("order not found locally, order={}", zrt::to_str(entrust));
+        return;
+    }
+    zrt::fill_field(entrust->status, recv_data.status);
+    zrt::fill_field(entrust->ex_entno, recv_data.ex_entno);
+    zrt::fill_field(entrust->err_code, recv_data.err_code);
+    zrt::fill_field(entrust->err_msg, recv_data.err_msg);
+    if (entrust->err_code) {
+        zrt::fill_field(entrust->status, OrderStatus::_9);
+    }
+
+    // 写入共享内存，确保 err_msg 等错误信息能被 MySqlGateway 持久化到数据库
+    m_order_manager.SaveOrder2Shm(*entrust);
+
+    // 发送委托的时候已经应答了, 如果没有废单就不用再应答了
+    if (entrust->status == OrderStatus::_9) {
+        const auto iter = m_strategy_proxy_map.find(entrust->policy_no);
+        if (iter != m_strategy_proxy_map.end()) {
+            iter->second->PostData(kPlaceOrderConfirm, std::make_shared<TBuffer>(*entrust));
+        } else {
+            SPDLOG_ERROR("strat={} not found in m_strategy_proxy_map", entrust->policy_no);
+        }
+    }
+}
+
+void StrategyEngine::OnCancelOrderRsp(int msg_id, const BufPtr buffer) {
+    auto recv_data = *reinterpret_cast<const WithdrawRsp*>(buffer->Data());
+    SPDLOG_INFO("{}", zrt::to_str(recv_data));
+}
+
+void StrategyEngine::OnPlaceOrderConfirm(int msg_id, const BufPtr buffer) {
+    const auto& recv_data = buffer->RefData<Order>();
+    SPDLOG_INFO("received order: {}", zrt::to_str(recv_data));
+    Order* entrust = m_order_manager.FindLocalOrder(recv_data);
+    if (ZRT_UNLIKELY(!entrust)) {
+        SPDLOG_WARN("entrust not found locally, entno={}", recv_data.entno);
+        // 从外系统下的单
+        if (ZRT_LIKELY(!recv_data.entno)) {
+            if (const int64_t ordno = m_order_manager.FindOrderNo(recv_data)) {
+                SPDLOG_WARN("found market={} ex_ordno={} ordno={}", recv_data.market, recv_data.ex_entno, ordno);
+                entrust = m_order_manager.FindLocalOrder(ordno);
+            } else {
+                Order order = recv_data;
+                zrt::fill_field(order.entno, m_order_manager.CreateOrderId());
+                // 外系统没有下单时间, 用交易所确认时间替代
+                zrt::fill_field(order.ent_time, order.confirm_time);
+                zrt::fill_field(order.fmt_time, MyUTC(order.ent_time, 19).GetYmdHMS());
+                zrt::fill_field(order.source, OrderSource::Foreign);
+                entrust = m_order_manager.AddOrder(order);
+                SPDLOG_WARN("add foreign order={}", zrt::to_str(order));
+            }
+        }
+        // 有委托号还找不到, 有问题, 委托应该存在, 因为策略引擎启动时加载了数据库中近期的委托
+        // 还找不到只能不处理了
+        if (ZRT_UNLIKELY(!entrust)) {
+            SPDLOG_ERROR("entrust not found: {}", zrt::to_str(recv_data));
+            return;
+        }
+    }
+    if (!entrust->ex_entno) {
+        zrt::fill_field(entrust->ex_entno, recv_data.ex_entno);
+    }
+    else if (entrust->ex_entno != recv_data.ex_entno) {
+        SPDLOG_ERROR("ex_entno error: local={} recv={}", zrt::to_str(*entrust), zrt::to_str(recv_data));
+    }
+    // 先累加, 因为生成成交要用
+    ++entrust->status_id;
+    // 要在更新委托之前生成成交, 因为需要旧的委托
+    CreateTrade(*entrust, recv_data);
+    FillOrderByOrder(*entrust, recv_data);
+    SPDLOG_INFO("updated order: {}", zrt::to_str(*entrust));
+    m_order_manager.SaveOrder2Shm(*entrust);
+    m_order_manager.SetUp2date(entrust->account_id, entrust->entno);
+
+    // 记录private_no到entno的映射
+    if (!zrt::is_empty(entrust->private_no) && !zrt::is_empty(entrust->policy_no)) {
+        m_private_no_map[entrust->policy_no][entrust->private_no] = entrust->entno;
+        SPDLOG_DEBUG("Record private_no mapping: strat={}, private_no={}, entno={}",
+                    entrust->policy_no, entrust->private_no, entrust->entno);
+    }
+
+    if (zrt::is_empty(entrust->policy_no)) {
+        SPDLOG_WARN("policy_no is empty, maybe foreign order");
+        return;
+    }
+    SendToStrategy(kPlaceOrderConfirm, std::make_shared<TBuffer>(*entrust), entrust->policy_no);
+}
+
+void StrategyEngine::OnOrderRecovery(int msg_id, const BufPtr buffer) {
+    buffer->ForEach<Order>([this](const Order& recv_data) {
+        SPDLOG_INFO("Recovery entrust: {}", zrt::to_str(recv_data));
+
+        // 查找本地委托
+        Order* local_entrust = m_order_manager.FindLocalOrder(recv_data);
+        if (ZRT_UNLIKELY(!local_entrust)) {
+            SPDLOG_WARN("Recovery: entrust not found locally, entno={}", recv_data.entno);
+            // 从外系统下的单
+            if (ZRT_LIKELY(!recv_data.entno)) {
+                Order order = recv_data;
+                zrt::fill_field(order.entno, m_order_manager.CreateOrderId());
+                zrt::fill_field(order.source, OrderSource::Foreign);
+                m_order_manager.AddOrder(order);
+                local_entrust = m_order_manager.FindLocalOrder(order);
+                SPDLOG_WARN("add foreign order={}", zrt::to_str(order));
+            }
+            // 有委托号还找不到, 有问题, 委托应该存在, 因为策略引擎启动时加载了数据库中近期的委托
+            // 还找不到只能不处理了
+            if (ZRT_UNLIKELY(!local_entrust)) {
+                SPDLOG_ERROR("unexpected order={}", zrt::to_str(recv_data));
+                return;
+            }
+        }
+
+        if (!m_order_manager.IsForwardOrder(*local_entrust, recv_data)) {
+            SPDLOG_WARN("Recovery: entrust check failed, ignore invalid update. "
+                        "local={}, recv={}",
+                        zrt::to_str(*local_entrust), zrt::to_str(recv_data));
+            return;
+        }
+
+        // 校验通过，更新本地委托
+        if (ZRT_UNLIKELY(!local_entrust->ex_entno)) {
+            zrt::fill_field(local_entrust->ex_entno, recv_data.ex_entno);
+        }
+        else if (ZRT_UNLIKELY(local_entrust->ex_entno != recv_data.ex_entno)) {
+            SPDLOG_ERROR("Recovery: ex_entno mismatch: local={} recv={}",
+                         zrt::to_str(*local_entrust), zrt::to_str(recv_data));
+        }
+        ++local_entrust->status_id;
+        // 创建成交
+        CreateTrade(*local_entrust, recv_data);
+        // 通过指针更新, 新的委托就已经在本地内存中了
+        FillOrderByOrder(*local_entrust, recv_data);
+        m_order_manager.SaveOrder2Shm(*local_entrust);
+
+        SPDLOG_INFO("Recovery: entrust updated successfully, entno={}, status={}, filled={}",
+                    local_entrust->entno, local_entrust->status, local_entrust->filled);
+
+        // 记录private_no到entno的映射
+        if (!zrt::is_empty(local_entrust->private_no) &&
+            !zrt::is_empty(local_entrust->policy_no)) {
+            m_private_no_map[local_entrust->policy_no][local_entrust->private_no] = local_entrust->entno;
+            SPDLOG_DEBUG("Recovery: Record private_no mapping: strat={}, private_no={}, entno={}",
+                        local_entrust->policy_no, local_entrust->private_no, local_entrust->entno);
+        }
+
+        // // todo 写入共享内存
+        // if constexpr (GlobalConst::IsRealTrading) {
+        //     m_mysql_gateway->PostMsg(kDbSetOrder, std::make_shared<TBuffer>(*local_entrust));
+        // }
+
+        // 转发给策略
+        if (zrt::is_empty(local_entrust->policy_no)) {
+            SPDLOG_WARN("Recovery: policy_no is empty for entno={}", local_entrust->entno);
+            return;
+        }
+        if (const auto iter = m_strategy_proxy_map.find(local_entrust->policy_no);
+            iter != m_strategy_proxy_map.end()) {
+            iter->second->PostData(kPlaceOrderConfirm, std::make_shared<TBuffer>(*local_entrust));
+            SPDLOG_DEBUG("Recovery: entrust forwarded to strategy={}", local_entrust->policy_no);
+        } else {
+            SPDLOG_ERROR("Recovery: strat={} not found in m_strategy_proxy_map", local_entrust->policy_no);
+        }
+    });
+}
+
+void StrategyEngine::OnCancelOrderReq(int msg_id, const BufPtr buffer) {
+    const auto& recv_data = *reinterpret_cast<const WithdrawReq*>(buffer->Data());
+    SPDLOG_INFO("{}", zrt::to_str(recv_data));
+    if (EnsureTradeGateway(recv_data.market, recv_data.account_id)) {
+        const std::string account_id = [&recv_data]() {
+            if constexpr (GlobalConst::IsRealTrading) {
+                return recv_data.account_id;
+            } else {
+                return k_DummyTrade;
+            }
+        }();
+        m_trade_gw_map.at(account_id)->PostMsg(kCancelOrder, std::make_shared<TBuffer>(recv_data));
+    } else {
+        std::string err_msg = fmt::format("create trade gateway failed, market={}, account={}", recv_data.market, recv_data.account_id);
+        SPDLOG_ERROR("{}", err_msg);
+        WithdrawRsp withdraw_rsp {};
+        zrt::fill_field(withdraw_rsp.err_code, static_cast<int>(ErrorCode::kStratEngineWithdrawEntrustError));
+        zrt::fill_field(withdraw_rsp.err_msg, err_msg);
+        Order* entrust = m_order_manager.FindLocalOrder(recv_data.entno);
+        if (ZRT_LIKELY(entrust != nullptr)) {
+            const auto iter = m_strategy_proxy_map.find(entrust->policy_no);
+            if (iter != m_strategy_proxy_map.end()) {
+                iter->second->PostData(kCancelOrderRsp, std::make_shared<TBuffer>(withdraw_rsp));
+                return;
+            }
+            SPDLOG_ERROR("strat={} not found in m_strategy_proxy_map", entrust->policy_no);
+        }
+        else {
+            SPDLOG_ERROR("entno={} not found in m_order_manager", recv_data.entno);
+        }
+        // 找不到委托就给每个策略都发一遍
+        for (const auto& p : m_strategy_proxy_map) {
+            p.second->PostData(kCancelOrderRsp, std::make_shared<TBuffer>(withdraw_rsp));
+        }
+    }
+}
+
+void StrategyEngine::CreateTrade(const Order& local_order, const Order& recv_order) {
+    if (zrt::less_equal(recv_order.filled, local_order.filled) ||
+        !zrt::equal_any_of(local_order.market, k_okx, k_okx_dummy)) {
+        SPDLOG_INFO("filled({}->{}) not changed or order({}) not in dedicated market, skip", local_order.filled, recv_order.filled, local_order.market);
+        return;
+    }
+    Trade trade {};
+    zrt::fill_field(trade.tdno, OrderManager::CreateTradeId());
+    zrt::fill_field(trade.market, local_order.market);
+    zrt::fill_field(trade.account_id, local_order.account_id);
+    zrt::fill_field(trade.instrument, local_order.inst_id);
+    zrt::fill_field(trade.margin_mode, local_order.trade_mode);
+    zrt::fill_field(trade.strat_id, local_order.policy_no);
+    zrt::fill_field(trade.private_no, local_order.private_no);
+    zrt::fill_field(trade.ordno, local_order.entno);
+    zrt::fill_field(trade.td_side, local_order.bs_side);
+    zrt::fill_field(trade.px_type, local_order.price_type);
+    zrt::fill_field(trade.td_val, trade.td_qty * trade.td_px);
+    zrt::fill_field(trade.ord_status_id, local_order.status_id);
+    zrt::fill_field(trade.portfolio, local_order.portfolio);
+
+    zrt::fill_field(trade.pos_side, recv_order.pos_side);
+    zrt::fill_field(trade.td_qty, recv_order.trd_qty);
+    zrt::fill_field(trade.td_px, recv_order.trd_px);
+    zrt::fill_field(trade.filled_time, recv_order.filled_time);
+
+    SPDLOG_INFO("{}", zrt::to_str(trade));
+    m_order_manager.AddTrade(trade);
+
+    const auto buffer = std::make_shared<TBuffer>(trade);
+
+    // // 转发成交数据到数据库（仅实盘模式）
+    // // 注意：现在主要通过共享内存持久化，这里的直接发送作为备用
+    // if constexpr (GlobalConst::IsRealTrading) {
+    //     m_mysql_gateway->PostMsg(kDbSetTrade, buffer);
+    // }
+
+    for (const auto& strat_id: m_trade_sub_map[trade.account_id][trade.instrument]) {
+        SendToStrategy(kTradePush, buffer, strat_id);
+        SendToStrategy(kPortfolioPosPush, std::make_shared<TBuffer>(m_order_manager.GetPortfolioPos(trade)), strat_id);
+    }
+}
+
+void StrategyEngine::OnTradePush(int msg_id, const BufPtr buffer) {
+    const auto& recv_data = *reinterpret_cast<const Trade*>(buffer->Data());
+    SPDLOG_INFO("{}", zrt::to_str(recv_data));
+
+    m_order_manager.AddTrade(recv_data);
+
+    // // 转发成交数据到数据库（仅实盘模式）
+    // // 注意：现在主要通过共享内存持久化，这里的直接发送作为备用
+    // if constexpr (GlobalConst::IsRealTrading) {
+    //     m_mysql_gateway->PostMsg(kDbSetTrade, buffer);
+    // }
+
+    for (const auto& strat_id: m_trade_sub_map[recv_data.account_id][recv_data.instrument]) {
+        SendToStrategy(kTradePush, buffer, strat_id);
+        SendToStrategy(kPortfolioPosPush, std::make_shared<TBuffer>(m_order_manager.GetPortfolioPos(recv_data)), strat_id);
+    }
+}
+
+void StrategyEngine::OnPosPush(int msg_id, const BufPtr buffer) {
+    const auto& recv_data = *reinterpret_cast<const Position*>(buffer->Data());
+    SPDLOG_INFO("{}", zrt::to_str(recv_data));
+    m_order_manager.UpdatePos(recv_data);
+    for (const auto& strat_id: m_trade_sub_map[recv_data.account_id][recv_data.instrument]) {
+        const auto iter = m_strategy_proxy_map.find(strat_id);
+        if (iter != m_strategy_proxy_map.end()) {
+            iter->second->PostData(kPositionPush, buffer);
+        } else {
+            SPDLOG_ERROR("strat={} not found in m_strategy_proxy_map", strat_id);
+        }
+    }
+}
+
+void StrategyEngine::OnBalancePush(int msg_id, const BufPtr buffer) {
+    const auto& recv_data = *reinterpret_cast<const Balance*>(buffer->Data());
+    SPDLOG_INFO("{}", zrt::to_str(recv_data));
+    m_order_manager.UpdateBalance(recv_data);
+    std::unordered_set<std::string> already_sent {};
+    for (const auto& inst_map_pair: m_trade_sub_map[recv_data.account_id]) {
+        for (const auto& strat_id: inst_map_pair.second) {
+            // 插不进去说明已经发过了
+            if (!already_sent.emplace(strat_id).second) {
+                continue;
+            }
+            const auto iter = m_strategy_proxy_map.find(strat_id);
+            if (iter != m_strategy_proxy_map.end()) {
+                iter->second->PostData(kBalancePush, buffer);
+            } else {
+                SPDLOG_ERROR("strat={} not found in m_strategy_proxy_map", strat_id);
+            }
+        }
+    }
+}
+
+void StrategyEngine::OnDepth1(int msg_id, const BufPtr buffer) {
+    const auto depth = *reinterpret_cast<const Depth*>(buffer->Data());
+#ifdef GTRADE_ENABLE_LATENCY_TEST
+    SPDLOG_TRACE("[TT] engine_quote_in={}us", (zrt::get_monotonic19() - depth.monotonic) / 1000);
+#endif
+    SPDLOG_TRACE("market={} symbol={} datetime={} sub_cnt={}", depth.market, depth.symbol, depth.datetime, m_quote_sub_map.size());
+
+    if constexpr (GlobalConst::IsBackTest) {
+        m_trade_gw_map.at(k_DummyTrade)->PostMsg(MsgId::kDepth1, buffer);
+    }
+
+    SendToSubedStrategies(MsgId::kDepth1, buffer, m_quote_sub_map[{k_depth1, depth.market, depth.symbol}]);
+#ifdef GTRADE_ENABLE_LATENCY_TEST
+    SPDLOG_TRACE("[TT] engine_quote_out={}us", (zrt::get_monotonic19() - depth.monotonic) / 1000);
+#endif
+
+    // 保存最新价格（用于定时器周期性更新策略持仓未实现盈亏）
+    if (depth.bid_cnt > 0 && depth.ask_cnt > 0) {
+        const double last_price = (depth.bid_price[0] + depth.ask_price[0]) / 2.0;
+        m_last_price_map[depth.market][depth.symbol] = last_price;
+    }
+}
+
+void StrategyEngine::OnWebSocketOpenNotify(int msg_id, const BufPtr buffer) {
+    const auto& recv_data = *reinterpret_cast<const WebSocketOpenNotify*>(buffer->Data());
+    SPDLOG_INFO("{}", zrt::to_str(recv_data));
+    m_order_manager.ClearOrderUp2date(recv_data.account_id);
+    m_order_manager.ClearPosUp2date(recv_data.account_id);
+    m_order_manager.ClearBalanceUp2date(recv_data.account_id);
+
+    // todo market_info的状态定时清理
+    // m_market_info_status[recv_data.account_id] = DataStatus::kNotReady;
+    m_balance_status[recv_data.account_id] = DataStatus::kNotReady;
+    m_pos_status[recv_data.account_id] = DataStatus::kNotReady;
+    m_order_status[recv_data.account_id] = DataStatus::kNotReady;
+}
+
+void StrategyEngine::OnSetTimer(int msg_id, const BufPtr buffer) {
+    auto recv_data = *reinterpret_cast<const SetTimerReq*>(buffer->Data());
+    SPDLOG_INFO("{}", zrt::to_str(recv_data));
+    zrt::fill_field(recv_data.service_name, k_StrategyEngine);
+    m_timer_manager->PostMsg(kSetTimer, std::make_shared<TBuffer>(recv_data));
+}
+
+void StrategyEngine::OnHandleKillTimerReq(int msg_id, const BufPtr buffer) {
+    auto recv_data = *reinterpret_cast<const TimerKey*>(buffer->Data());
+    SPDLOG_INFO("{}", zrt::to_str(recv_data));
+    zrt::fill_field(recv_data.service_name, k_StrategyEngine);
+    m_timer_manager->PostMsg(kKillTimer, std::make_shared<TBuffer>(recv_data));
+}
+
+void StrategyEngine::OnHandleClearAllTimerReq(int msg_id, const BufPtr buffer) {
+    auto recv_data = *reinterpret_cast<const TimerKey*>(buffer->Data());
+    SPDLOG_INFO("{}", zrt::to_str(recv_data));
+    zrt::fill_field(recv_data.service_name, k_StrategyEngine);
+    m_timer_manager->PostMsg(kClearAllTimer, std::make_shared<TBuffer>(recv_data));
+}
+
+void StrategyEngine::OnHandleTimerEvent(int msg_id, const BufPtr buffer) {
+    const auto& timer_event = buffer->RefData<TimerEventPush>();
+    SPDLOG_TRACE("{}", zrt::to_str(timer_event));
+    if (zrt::equal(timer_event.setter_id, k_StrategyEngine)) {
+        // 处理策略引擎的定时器事件
+        switch (timer_event.timer_id) {
+            case TimerId::kTimer_UpdateUpl: {
+                // 周期性更新所有策略持仓的未实现盈亏
+                m_order_manager.UpdateAllStrategyPositionUpl(m_last_price_map);
+            } break;
+            case TimerId::kTimer_RefreshMarketInfo: {
+                // 周期性刷新市场信息缓存
+                RefreshAllMarketInfo(false);
+            } break;
+            default: break;
+        }
+    } else {
+        // 转发其他定时器事件到策略
+        SendToStrategy(msg_id, buffer, timer_event.setter_id);
+    }
+}
+
+// 策略管理接口实现
+bool StrategyEngine::AddStrategy(const std::string& cfg_path) {
+    SPDLOG_INFO("add strategy from config={}", cfg_path);
+
+    // 检查文件是否存在
+    if (!std::filesystem::exists(cfg_path)) {
+        SPDLOG_ERROR("config file={} does not exist", cfg_path);
+        return false;
+    }
+
+    // 获取策略ID（从文件名提取，去掉.yml后缀）
+    std::string strat_id = std::filesystem::path(cfg_path).stem();
+
+    // 按策略ID判断是否重复
+    if (m_strategy_proxy_map.count(strat_id)) {
+        SPDLOG_ERROR("strategy with id={} already exists", strat_id);
+        return false;
+    }
+
+    // 加载并启动策略
+    if (!LoadSingleStrategyFromFile(cfg_path)) {
+        return false;
+    }
+
+    // 启动策略
+    if (m_strategy_proxy_map.count(strat_id)) {
+        m_strategy_proxy_map.at(strat_id)->Start();
+        SPDLOG_INFO("strategy={} added and started successfully", strat_id);
+        return true;
+    }
+
+    SPDLOG_ERROR("failed to add strategy from config={}", cfg_path);
+    return false;
+}
+
+bool StrategyEngine::DeleteStrategy(const std::string& strat_id) {
+    SPDLOG_INFO("delete strategy={}", strat_id);
+
+    // 检查策略是否在内存中
+    const bool in_memory = m_strategy_proxy_map.count(strat_id);
+
+    if (in_memory) {
+        // 标记策略正在被删除，阻止 OnStop 中的保存操作
+        auto& strategy = m_strategy_proxy_map.at(strat_id);
+        strategy->MarkAsDeleting();
+
+        // 停止策略（Stop() 内部同步投递到策略线程，IStrategyProxy 统一接口）
+        strategy->Stop();
+        SPDLOG_INFO("strategy={} stopped", strat_id);
+
+        // 从模板映射中删除
+        if (const auto template_it = m_strategy_template_map.find(strat_id);
+            template_it != m_strategy_template_map.end()) {
+            const std::string& template_id = template_it->second;
+            // 从模板的策略集合中删除该策略
+            if (const auto strat_set_it = m_template_strategy_map.find(template_id);
+                strat_set_it != m_template_strategy_map.end()) {
+                strat_set_it->second.erase(strat_id);
+                // 如果该模板下已经没有策略了，删除整个模板条目
+                if (strat_set_it->second.empty()) {
+                    m_template_strategy_map.erase(strat_set_it);
+                }
+            }
+            m_strategy_template_map.erase(template_it);
+        }
+
+        // 从map中删除策略
+        m_strategy_proxy_map.erase(strat_id);
+        m_strategy_cfg_path_map.erase(strat_id);
+
+        // 删除共享内存中的检查点
+        const std::string checkpoint_shm_name = gtrade::GetStrategyCheckpointShmName(strat_id);
+        if (boost::interprocess::shared_memory_object::remove(checkpoint_shm_name.c_str())) {
+            SPDLOG_INFO("strategy={} checkpoint shm removed: {}", strat_id, checkpoint_shm_name);
+        } else {
+            SPDLOG_DEBUG("strategy={} checkpoint shm not found or already removed: {}", strat_id, checkpoint_shm_name);
+        }
+    } else {
+        SPDLOG_INFO("strategy={} not in memory, will delete from database only", strat_id);
+    }
+
+    // 无论策略是否在内存中，都尝试从数据库中删除策略记录
+    StrategyInfo strat_info {};
+    zrt::fill_field(strat_info.strat_name, strat_id);
+    m_mysql_gateway->PostMsg(kDbDelStrategyInfo, std::make_shared<TBuffer>(strat_info));
+    SPDLOG_INFO("strategy={} delete request sent to database", strat_id);
+
+    SPDLOG_INFO("strategy={} deleted successfully", strat_id);
+    return true;
+}
+
+bool StrategyEngine::RestartStrategy(const std::string& strat_id) {
+    SPDLOG_INFO("restart strategy={}", strat_id);
+
+    // 检查策略是否存在
+    if (!m_strategy_proxy_map.count(strat_id)) {
+        SPDLOG_ERROR("strategy={} does not exist, cannot restart", strat_id);
+        return false;
+    }
+
+    // 直接调用Stop和Start接口，不删除策略
+    const auto& strategy = m_strategy_proxy_map.at(strat_id);
+    // 停止策略（Stop() 内部同步投递到策略线程执行）
+    strategy->Stop();
+    SPDLOG_INFO("strategy={} stopped", strat_id);
+
+    // 启动策略。Start() 内部会同步投递到策略线程执行。
+    if (!strategy->Start()) {
+        SPDLOG_ERROR("failed to start strategy={}", strat_id);
+        return false;
+    }
+
+    SPDLOG_INFO("strategy={} restarted successfully", strat_id);
+    return true;
+}
+
+bool StrategyEngine::StartStrategy(const std::string& strat_id) {
+    SPDLOG_INFO("start strategy={}", strat_id);
+
+    // 检查策略是否存在
+    if (!m_strategy_proxy_map.count(strat_id)) {
+        SPDLOG_ERROR("strategy={} does not exist, cannot start", strat_id);
+        return false;
+    }
+
+    // Start() 内部会同步投递到策略线程执行，避免与 OnTick/OnOrder 并发访问策略状态
+    if (!m_strategy_proxy_map.at(strat_id)->Start()) {
+        SPDLOG_ERROR("failed to start strategy={}", strat_id);
+        return false;
+    }
+
+    SPDLOG_INFO("strategy={} started successfully", strat_id);
+    return true;
+}
+
+bool StrategyEngine::StopStrategy(const std::string& strat_id) {
+    SPDLOG_INFO("stop strategy={}", strat_id);
+    // 检查策略是否存在
+    const auto iter = m_strategy_proxy_map.find(strat_id);
+    if (iter == m_strategy_proxy_map.end()) {
+        SPDLOG_ERROR("strategy={} does not exist, cannot stop", strat_id);
+        return false;
+    }
+
+    // Stop() 内部同步投递到策略线程执行，避免与 OnTick/OnOrder 并发访问策略状态
+    iter->second->Stop();
+
+    SPDLOG_INFO("strategy={} stopped successfully", strat_id);
+    return true;
+}
+
+std::string StrategyEngine::QueryAllStrategies() const {
+    std::stringstream ss;
+    ss << "\n========== Strategy List ==========\n";
+    ss << "Total strategies: " << m_strategy_proxy_map.size() << "\n\n";
+
+    if (m_strategy_proxy_map.empty()) {
+        ss << "No strategies loaded.\n";
+    } else {
+        int index = 1;
+        for (const auto& [strat_id, strat_ptr] : m_strategy_proxy_map) {
+            ss << index++ << ". Strategy ID: " << strat_id << "\n";
+            auto it = m_strategy_cfg_path_map.find(strat_id);
+            if (it != m_strategy_cfg_path_map.end()) {
+                ss << "   Config: " << it->second << "\n";
+            }
+            ss << "   Status: Running\n";
+            ss << "\n";
+        }
+    }
+    ss << "===================================\n";
+
+    return ss.str();
+}
+
+std::string StrategyEngine::QueryStrategiesByTemplate(const std::string& template_name) const {
+    rapidjson::Document doc {};
+    doc.SetObject();
+    auto& allocator = doc.GetAllocator();
+
+    rapidjson::Value strategies(rapidjson::kArrayType);
+
+    // 从模板到策略的映射中查找该模板的所有策略
+    auto template_it = m_template_strategy_map.find(template_name);
+    if (template_it != m_template_strategy_map.end()) {
+        for (const auto& strat_id : template_it->second) {
+            SPDLOG_INFO("strat_id={} belongs to template={}", strat_id, template_name);
+
+            rapidjson::Value strategy_obj(rapidjson::kObjectType);
+
+            rapidjson::Value id_val;
+            id_val.SetString(strat_id.c_str(), allocator);
+            strategy_obj.AddMember("id", id_val, allocator);
+
+            // 获取配置路径
+            const auto cfg_it = m_strategy_cfg_path_map.find(strat_id);
+            if (cfg_it != m_strategy_cfg_path_map.end()) {
+                rapidjson::Value cfg_val;
+                cfg_val.SetString(cfg_it->second.c_str(), allocator);
+                strategy_obj.AddMember("config_path", cfg_val, allocator);
+            }
+
+            strategy_obj.AddMember("status", "running", allocator);
+
+            strategies.PushBack(strategy_obj, allocator);
+        }
+    }
+
+    doc.AddMember("strategies", strategies, allocator);
+    doc.AddMember("template", rapidjson::Value(template_name.c_str(), allocator), allocator);
+
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    doc.Accept(writer);
+
+    return buffer.GetString();
+}
+
+std::vector<std::string> StrategyEngine::GetLoadedStrategyTemplates() const {
+    std::vector<std::string> templates;
+    // 从模板策略映射中获取所有已加载的模板
+    for (const auto& [template_id, strategy_set] : m_template_strategy_map) {
+        templates.push_back(template_id);
+    }
+    return templates;
+}
+
+std::vector<std::string> StrategyEngine::GetAllStrategyTemplates() const {
+    std::vector<std::string> templates;
+    // 使用 /opt/gtrade 或者当前工作目录作为根路径
+    std::string strategy_param_dir = "strategy_param";
+    if (!std::filesystem::exists(strategy_param_dir)) {
+        SPDLOG_ERROR("strategy_param directory does not exist: {}", strategy_param_dir);
+        return templates;
+    }
+    for (const auto& entry : std::filesystem::directory_iterator(strategy_param_dir)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".yml") {
+            templates.push_back(entry.path().stem().string());
+        }
+    }
+    return templates;
+}
+
+std::string StrategyEngine::GetTemplateConfig(const std::string& template_name) const {
+    std::string template_path = "strategy_param/" + template_name + ".yml";
+    if (!std::filesystem::exists(template_path)) {
+        SPDLOG_ERROR("template file does not exist: {}", template_path);
+        return "{}";
+    }
+
+    try {
+        YAML::Node config = YAML::LoadFile(template_path);
+
+        rapidjson::Document doc;
+        doc.SetObject();
+        auto& allocator = doc.GetAllocator();
+
+        // 解析 param
+        if (config["param"]) {
+            rapidjson::Value params(rapidjson::kArrayType);
+            for (const auto& param : config["param"]) {
+                rapidjson::Value param_obj(rapidjson::kObjectType);
+
+                if (param["id"]) {
+                    rapidjson::Value id_val;
+                    id_val.SetString(param["id"].as<std::string>().c_str(), allocator);
+                    param_obj.AddMember("id", id_val, allocator);
+                }
+
+                if (param["name"]) {
+                    rapidjson::Value name_val;
+                    name_val.SetString(param["name"].as<std::string>().c_str(), allocator);
+                    param_obj.AddMember("name", name_val, allocator);
+                }
+
+                params.PushBack(param_obj, allocator);
+            }
+            doc.AddMember("param", params, allocator);
+        }
+
+        // 解析 indicator
+        if (config["indicator"]) {
+            rapidjson::Value indicators(rapidjson::kArrayType);
+            for (const auto& indicator : config["indicator"]) {
+                rapidjson::Value indicator_obj(rapidjson::kObjectType);
+
+                if (indicator["id"]) {
+                    rapidjson::Value id_val;
+                    id_val.SetString(indicator["id"].as<std::string>().c_str(), allocator);
+                    indicator_obj.AddMember("id", id_val, allocator);
+                }
+
+                if (indicator["name"]) {
+                    rapidjson::Value name_val;
+                    name_val.SetString(indicator["name"].as<std::string>().c_str(), allocator);
+                    indicator_obj.AddMember("name", name_val, allocator);
+                }
+
+                indicators.PushBack(indicator_obj, allocator);
+            }
+            doc.AddMember("indicator", indicators, allocator);
+        }
+
+        rapidjson::StringBuffer buffer;
+        rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+        doc.Accept(writer);
+
+        return buffer.GetString();
+
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("failed to parse template file {}: {}", template_path, e.what());
+        return "{}";
+    }
+}
+
+// HTTP策略管理同步消息处理函数
+void StrategyEngine::OnHttpAddStrategy(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) {
+    const auto& req = *reinterpret_cast<const HttpAddStrategyReq*>(buffer->Data());
+    std::string cfg_path(req.config_path);
+
+    SPDLOG_INFO("OnHttpAddStrategy: config_path={}", cfg_path);
+
+    bool success = AddStrategy(cfg_path);
+
+    HttpStrategyOperationRsp rsp{};
+    rsp.success = success;
+    auto rsp_buf = std::make_shared<TBuffer>(rsp);
+    ret.set_value(rsp_buf);
+}
+
+void StrategyEngine::OnHttpDeleteStrategy(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) {
+    const auto& req = *reinterpret_cast<const HttpDeleteStrategyReq*>(buffer->Data());
+    std::string strat_id(req.strat_id);
+
+    SPDLOG_INFO("OnHttpDeleteStrategy: strat_id={}", strat_id);
+
+    bool success = DeleteStrategy(strat_id);
+
+    HttpStrategyOperationRsp rsp{};
+    rsp.success = success;
+    auto rsp_buf = std::make_shared<TBuffer>(rsp);
+    ret.set_value(rsp_buf);
+}
+
+void StrategyEngine::OnHttpRestartStrategy(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) {
+    const auto& req = *reinterpret_cast<const HttpRestartStrategyReq*>(buffer->Data());
+    std::string strat_id(req.strat_id);
+
+    SPDLOG_INFO("OnHttpRestartStrategy: strat_id={}", strat_id);
+
+    bool success = RestartStrategy(strat_id);
+
+    HttpStrategyOperationRsp rsp{};
+    rsp.success = success;
+    auto rsp_buf = std::make_shared<TBuffer>(rsp);
+    ret.set_value(rsp_buf);
+}
+
+void StrategyEngine::OnHttpStartStrategy(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) {
+    const auto& req = *reinterpret_cast<const HttpStartStrategyReq*>(buffer->Data());
+    std::string strat_id(req.strat_id);
+
+    SPDLOG_INFO("OnHttpStartStrategy: strat_id={}", strat_id);
+
+    bool success = StartStrategy(strat_id);
+
+    HttpStrategyOperationRsp rsp{};
+    rsp.success = success;
+    auto rsp_buf = std::make_shared<TBuffer>(rsp);
+    ret.set_value(rsp_buf);
+}
+
+void StrategyEngine::OnHttpStopStrategy(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) {
+    const auto& req = *reinterpret_cast<const HttpStopStrategyReq*>(buffer->Data());
+    std::string strat_id(req.strat_id);
+
+    SPDLOG_INFO("OnHttpStopStrategy: strat_id={}", strat_id);
+
+    bool success = StopStrategy(strat_id);
+
+    HttpStrategyOperationRsp rsp{};
+    rsp.success = success;
+    auto rsp_buf = std::make_shared<TBuffer>(rsp);
+    ret.set_value(rsp_buf);
+}
+
+void StrategyEngine::OnHttpQueryAllStrategies(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) {
+    SPDLOG_INFO("OnHttpQueryAllStrategies");
+
+    std::string result = QueryAllStrategies();
+
+    HttpQueryRsp rsp{};
+    zrt::fill_field(rsp.response, result);
+    auto rsp_buf = std::make_shared<TBuffer>(rsp);
+    ret.set_value(rsp_buf);
+}
+
+void StrategyEngine::OnHttpQueryStrategiesByTemplate(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) {
+    const auto& req = *reinterpret_cast<const HttpQueryStrategiesByTemplateReq*>(buffer->Data());
+    const std::string template_name(req.template_name);
+
+    SPDLOG_INFO("OnHttpQueryStrategiesByTemplate: template_name={}", template_name);
+
+    const std::string result = QueryStrategiesByTemplate(template_name);
+
+    HttpQueryRsp rsp {};
+    zrt::fill_field(rsp.response, result);
+    const auto rsp_buf = std::make_shared<TBuffer>(rsp);
+    ret.set_value(rsp_buf);
+}
+
+void StrategyEngine::OnHttpGetTemplates(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) {
+    SPDLOG_INFO("OnHttpGetTemplates");
+
+    std::vector<std::string> templates = GetAllStrategyTemplates();
+
+    // 将模板列表转换为JSON字符串
+    rapidjson::Document doc;
+    doc.SetArray();
+    auto& allocator = doc.GetAllocator();
+
+    for (const auto& tmpl : templates) {
+        rapidjson::Value tmpl_val;
+        tmpl_val.SetString(tmpl.c_str(), allocator);
+        doc.PushBack(tmpl_val, allocator);
+    }
+
+    rapidjson::StringBuffer buffer_json;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer_json);
+    doc.Accept(writer);
+
+    HttpQueryRsp rsp{};
+    zrt::fill_field(rsp.response, std::string(buffer_json.GetString()));
+    auto rsp_buf = std::make_shared<TBuffer>(rsp);
+    ret.set_value(rsp_buf);
+}
+
+void StrategyEngine::OnHttpGetTemplateConfig(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) {
+    const auto& req = *reinterpret_cast<const HttpGetTemplateConfigReq*>(buffer->Data());
+    std::string template_name(req.template_name);
+
+    SPDLOG_INFO("OnHttpGetTemplateConfig: template_name={}", template_name);
+
+    std::string result = GetTemplateConfig(template_name);
+
+    HttpQueryRsp rsp{};
+    zrt::fill_field(rsp.response, result);
+    auto rsp_buf = std::make_shared<TBuffer>(rsp);
+    ret.set_value(rsp_buf);
+}
+
+/**
+ * 处理保存快照请求
+ *
+ * @param msg_id 消息ID
+ * @param buffer 请求缓冲区（空）
+ * @param ret 响应promise
+ */
+void StrategyEngine::OnHttpSaveSnapshot(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) {
+    LOG_INFO("");
+
+    HttpSaveSnapshotRsp rsp {};
+    rsp.success = false;
+
+    if (!m_order_manager.IsWalEnabled()) {
+        SPDLOG_WARN("WAL is not enabled, cannot save snapshot");
+        zrt::fill_field(rsp.error_msg, "WAL is not enabled");
+        ret.set_value(std::make_shared<TBuffer>(rsp));
+        return;
+    }
+
+    // 调用 OrderManager 保存快照
+    const std::string snapshot_path = m_order_manager.SaveSnapshot();
+    if (snapshot_path.empty()) {
+        SPDLOG_ERROR("Failed to save snapshot");
+        zrt::fill_field(rsp.error_msg, "Failed to save snapshot");
+    } else {
+        SPDLOG_INFO("Snapshot saved: {}", snapshot_path);
+        rsp.success = true;
+        zrt::fill_field(rsp.snapshot_path, snapshot_path);
+    }
+
+    ret.set_value(std::make_shared<TBuffer>(rsp));
+}
+
+/**
+ * 处理获取 WAL 统计信息请求
+ *
+ * @param msg_id 消息ID
+ * @param buffer 请求缓冲区（空）
+ * @param ret 响应promise
+ */
+void StrategyEngine::OnHttpGetWalStats(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) {
+    SPDLOG_INFO("OnHttpGetWalStats");
+
+    HttpWalStatsRsp rsp {};
+    rsp.success = true;
+
+    if (!m_order_manager.IsWalEnabled()) {
+        rsp.success = false;
+        ret.set_value(std::make_shared<TBuffer>(rsp));
+        return;
+    }
+
+    const gtrade::WalStats stats = m_order_manager.GetWalStats();
+    rsp.shm_write_pos = stats.shm_write_pos;
+    rsp.shm_confirmed_pos = stats.shm_confirmed_pos;
+    rsp.shm_unconfirmed_bytes = stats.shm_unconfirmed_bytes;
+    rsp.file_current_seq = stats.file_current_seq;
+    rsp.file_total_size_bytes = stats.file_total_size_bytes;
+    rsp.last_snapshot_seq = stats.last_snapshot_seq;
+
+    if (auto* wal_mgr = m_order_manager.GetWalManager()) {
+        rsp.wal_file_size_mb = wal_mgr->GetWalFileSizeMB();
+        rsp.need_snapshot = wal_mgr->NeedSnapshot();
+    }
+
+    ret.set_value(std::make_shared<TBuffer>(rsp));
+}
+
+void StrategyEngine::OnDbSetStrategyInfo(int msg_id, const BufPtr buffer) {
+    const auto& strat_info = buffer->RefData<StrategyInfo>();
+    SPDLOG_INFO("{}", zrt::to_str(strat_info));
+    // 同步更新进程内代理的本地缓存（引擎线程，无锁安全）
+    if (const auto iter = m_strategy_proxy_map.find(strat_info.id);
+        iter != m_strategy_proxy_map.end()) {
+        if (auto* proxy = dynamic_cast<InProcessProxy*>(iter->second.get())) {
+            proxy->UpdateStratInfoCache(strat_info);
+        }
+    }
+    m_mysql_gateway->PostMsg(kDbSetStrategyInfo, buffer);
+}
+
+void StrategyEngine::OnDbSetStrategyLog(int msg_id, const BufPtr buffer) {
+    const auto& log = buffer->RefData<StrategyLog>();
+    SPDLOG_INFO("{}", zrt::to_str(log));
+    m_mysql_gateway->PostMsg(kDbSetStrategyLog, buffer);
+}
+
+void StrategyEngine::SendToStrategy(const int msg_id, const BufPtr buffer, const std::string& strat_id) {
+    if (ZRT_UNLIKELY(strat_id.empty())) {
+        SPDLOG_ERROR("strat_id is empty");
+        return;
+    }
+    if (const auto iter = m_strategy_proxy_map.find(strat_id);
+        ZRT_LIKELY(iter != m_strategy_proxy_map.end())) {
+        iter->second->PostData(msg_id, buffer);
+        SPDLOG_TRACE("send msg({}) to strategy({})", GetEmName_MsgId(msg_id), strat_id);
+        } else {
+            SPDLOG_ERROR("strat={} not found in m_strategy_proxy_map", strat_id);
+        }
+}
+
+void StrategyEngine::SendToAllStrategies(const int msg_id, const BufPtr buffer) {
+    for (const auto&[strat_id, strat_ptr]: m_strategy_proxy_map) {
+        strat_ptr->PostData(msg_id, buffer);
+        SPDLOG_TRACE("send msg({}) to strategy({})", GetEmName_MsgId(msg_id), strat_id);
+    }
+}
+
+// ========== HA 相关实现 ==========
+
+void StrategyEngine::InitHA() {
+    if constexpr (!GlobalConst::IsRealTrading) {
+        SPDLOG_INFO("HA disabled in backtest mode");
+        return;
+    }
+
+    if (!m_ha_config.enabled) {
+        SPDLOG_INFO("HA not enabled");
+        return;
+    }
+
+    SPDLOG_INFO("Initializing HA: role={}, peer={}, replication_port={}",
+                GetHARoleName(m_ha_config.initial_role),
+                m_ha_config.peer_addr,
+                m_ha_config.replication_port);
+
+    // 配置 WAL
+    gtrade::WalConfig wal_config;
+    wal_config.shm_wal_enabled = true;
+    wal_config.file_wal_enabled = true;
+    wal_config.file_wal_dir = "/data/gtrade/wal";
+    wal_config.snapshot_dir = "/data/gtrade/snapshot";
+
+    // 初始化 OrderManager 的 WAL
+    m_order_manager.InitWal(wal_config);
+
+    // 如果 WAL 启用成功，尝试恢复
+    if (m_order_manager.IsWalEnabled()) {
+        const size_t recovered = m_order_manager.FullRecover();
+        SPDLOG_INFO("Recovered {} entries from snapshot + WAL", recovered);
+
+        // 打印 WAL 统计
+        const auto wal_stats = m_order_manager.GetWalStats();
+        SPDLOG_INFO("WAL stats: shm_write_pos={}, shm_confirmed_pos={}, "
+                    "shm_unconfirmed_bytes={}, file_current_seq={}, last_snapshot_seq={}",
+                    wal_stats.shm_write_pos, wal_stats.shm_confirmed_pos,
+                    wal_stats.shm_unconfirmed_bytes, wal_stats.file_current_seq,
+                    wal_stats.last_snapshot_seq);
+    }
+
+    SPDLOG_INFO("HA initialization completed");
+}
+
+// ── 远程策略 ZMQ 事件处理 ──────────────────────────────────────────────────────
+
+/**
+ * OnRemoteStrategyConnected：处理 Runner 握手事件（AcceptLoop 线程 PostMsg 到此）。
+ *
+ * 在引擎线程中安全地操作 m_strategy_proxy_map：
+ *   - 新连接：用握手 payload 填充 StrategyInfo，创建 RemoteProxy，加入 map
+ *   - 已有 Proxy（断线重连）：替换 channel（幂等）
+ *
+ * 同一 strat_id 的身份冲突（两个 Runner 同时连接）：若旧 Proxy 仍存活，
+ * 记录告警并拒绝新连接；否则走重连分支（旧 Proxy 已死，可以接管）。
+ */
+void StrategyEngine::OnRemoteStrategyConnected(int /*msg_id*/, const BufPtr buffer) {
+    auto [peer_id, hs] = ZmqAcceptor::ParseHandshakeBuf(buffer);
+    const std::string strat_id(hs.strat_id);
+
+    if (strat_id.empty()) {
+        SPDLOG_WARN("StrategyEngine::OnRemoteStrategyConnected: empty strat_id from peer={}",
+                    peer_id);
+        return;
+    }
+
+    // 构造新 channel（Engine 侧，共享 ROUTER socket）
+    auto new_channel = std::make_shared<StrategyZmqChannel>(
+        &m_zmq_acceptor->GetRouterSocket(), peer_id);
+
+    const auto it = m_strategy_proxy_map.find(strat_id);
+    if (it != m_strategy_proxy_map.end()) {
+        // 已有 Proxy：断线重连分支
+        auto* proxy = dynamic_cast<RemoteProxy*>(it->second.get());
+        if (proxy == nullptr) {
+            // 已有非 RemoteProxy（inprocess/subprocess）：不允许远程模式接管，拒绝
+            SPDLOG_WARN("StrategyEngine::OnRemoteStrategyConnected: strat={} already exists "
+                        "as non-remote proxy, reject remote connection from peer={}",
+                        strat_id, peer_id);
+            return;
+        }
+
+        // 身份冲突防御：若 Proxy 仍存活且 peer_id 不同，说明有两个 Runner 争同一 strat_id
+        // 当前版本按重连处理（以最后一次连接为准），生产环境可按需调整为拒绝
+        if (proxy->IsAlive()) {
+            SPDLOG_WARN("StrategyEngine::OnRemoteStrategyConnected: strat={} still alive, "
+                        "replacing channel (peer={}). Possible duplicate Runner!",
+                        strat_id, peer_id);
+        }
+
+        proxy->OnReconnected(std::move(new_channel));
+        SPDLOG_INFO("StrategyEngine: strat={} reconnected (peer={})", strat_id, peer_id);
+    } else {
+        // 新连接：创建 RemoteProxy
+        auto proxy = std::make_unique<RemoteProxy>(hs, this, std::move(new_channel));
+        m_strategy_proxy_map.emplace(strat_id, std::move(proxy));
+        SPDLOG_INFO("StrategyEngine: strat={} connected, RemoteProxy created (peer={})",
+                    strat_id, peer_id);
+    }
+}
+
+/**
+ * OnRemoteChannelB：路由 Channel B 帧到对应 RemoteProxy。
+ *
+ * AcceptLoop 解析出 peer_id + msg_type + payload 后 PostMsg 到此。
+ * 根据 peer_id（= strat_id）找到对应 RemoteProxy，调用 OnIncomingFrame。
+ *
+ * Heartbeat（kSubprocHeartbeat）已在 StrategyZmqChannel::DispatchIncoming 中消化，
+ * 不会到达此处——AcceptLoop 直接 PostMsg kRemoteChannelB，DispatchIncoming 不在此流程中。
+ * 实际上 AcceptLoop 会把所有非握手帧（含心跳）一律 PostMsg kRemoteChannelB；
+ * 此处需要消化心跳并更新对应 channel 的心跳时间戳。
+ */
+void StrategyEngine::OnRemoteChannelB(int /*msg_id*/, const BufPtr buffer) {
+    const auto frame = ZmqAcceptor::ParseIncomingBuf(buffer);
+    const std::string strat_id = frame.peer_id;  // DEALER identity = strat_id
+
+    const auto it = m_strategy_proxy_map.find(strat_id);
+    if (it == m_strategy_proxy_map.end()) {
+        SPDLOG_WARN("StrategyEngine::OnRemoteChannelB: unknown strat_id={}, drop msg_type={}",
+                    strat_id, frame.msg_type);
+        return;
+    }
+
+    auto* proxy = dynamic_cast<RemoteProxy*>(it->second.get());
+    if (proxy == nullptr) {
+        // 非 RemoteProxy（理论上不应出现）
+        SPDLOG_WARN("StrategyEngine::OnRemoteChannelB: strat={} is not RemoteProxy", strat_id);
+        return;
+    }
+
+    // 心跳帧：直接更新 channel 的心跳时间戳（不走 PostMsg，atomic store 足够安全）
+    if (frame.msg_type == static_cast<uint32_t>(MsgId::kSubprocHeartbeat)) {
+        // DispatchIncoming 的逻辑：记录本地 steady_clock 时间
+        // 此处通过 channel 接口间接完成——需要直接访问 channel
+        // 简化：proxy->OnIncomingFrame 内部不处理心跳，由此处直接 PostMsg 回写时间戳
+        // 实际上 StrategyZmqChannel::DispatchIncoming 应由 AcceptLoop 调用，
+        // 但当前 AcceptLoop 统一 PostMsg，因此在此处补充心跳处理
+        // 最简实现：忽略心跳帧的 payload，只更新时间戳（通过 PostMsg 路径的延迟可接受）
+        // TODO: 如有性能需求，可在 AcceptLoop 中单独处理心跳（不走 PostMsg）
+        proxy->OnIncomingFrame(frame.msg_type, frame.payload, frame.payload_len);
+        return;
+    }
+
+    proxy->OnIncomingFrame(frame.msg_type, frame.payload, frame.payload_len);
+}
+
+/**
+ * OnRemoteSyncReq：处理 Runner 的状态同步请求。
+ *
+ * buf = strat_id 字符串（由 RemoteProxy::OnIncomingFrame 打包）。
+ * 查询 OrderManager 获取该策略的全量活跃订单，序列化为 RemoteSyncResp，
+ * 通过 RemoteProxy::PostData 发送 kRemoteSyncResp 给 Runner。
+ */
+void StrategyEngine::OnRemoteSyncReq(int /*msg_id*/, const BufPtr buffer) {
+    // 解析 strat_id
+    const std::string strat_id(buffer->Data(), buffer->GetSize());
+
+    const auto it = m_strategy_proxy_map.find(strat_id);
+    if (it == m_strategy_proxy_map.end()) {
+        SPDLOG_WARN("StrategyEngine::OnRemoteSyncReq: unknown strat_id={}", strat_id);
+        return;
+    }
+
+    // 查询全量活跃订单
+    std::vector<RemoteSyncRespItem> items;
+    m_order_manager.QueryOpenOrdersByStratId(strat_id, items);
+
+    SPDLOG_INFO("StrategyEngine::OnRemoteSyncReq: strat={} open_orders={}", strat_id, items.size());
+
+    // 序列化 RemoteSyncResp
+    const size_t total_bytes =
+        sizeof(RemoteSyncResp) + items.size() * sizeof(RemoteSyncRespItem);
+    auto resp_buf = std::make_shared<TBuffer>(static_cast<unsigned int>(total_bytes));
+
+    auto* resp = reinterpret_cast<RemoteSyncResp*>(resp_buf->MutableData());
+    resp->item_count = static_cast<uint32_t>(items.size());
+    if (!items.empty()) {
+        memcpy(resp->items, items.data(), items.size() * sizeof(RemoteSyncRespItem));
+    }
+
+    // 通过 Proxy 的 PostData 发送给 Runner（Channel A）
+    it->second->PostData(static_cast<int>(MsgId::kRemoteSyncResp), resp_buf);
+}

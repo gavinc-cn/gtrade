@@ -1,0 +1,93 @@
+OrderStatus:
+  name: 委托状态
+  type: enum
+  fields:
+    - {key: _0, val: '0', name: '未报'}
+    - {key: _1, val: '1', name: '正报'}
+    - {key: _2, val: '2', name: '已报'}
+    - {key: _3, val: '3', name: '部成'}
+    - {key: _4, val: '4', name: '全部成交'}
+    - {key: _5, val: '5', name: '已报待撤'}
+    - {key: _6, val: '6', name: '场内撤单'}
+    - {key: _7, val: '7', name: '部成待撤'}
+    - {key: _8, val: '8', name: '部成部撤'}
+    - {key: _9, val: '9', name: '废单'}
+    - {key: _I, val: 'I', name: '冻结'}
+    - {key: _A, val: 'A', name: '预埋单'}
+
+TradeSide:
+  name: 买卖标记
+  type: enum
+  fields:
+    - {key: Buy, val: 'b', name: '买'}
+    - {key: Sell, val: 's', name: '卖'}
+
+PosSide:
+  name: 多空方向
+  type: enum
+  fields:
+    - {key: Long, val: 'l', name: '多'}
+    - {key: Short, val: 's', name: '空'}
+    - {key: Net, val: 'n', name: '净'}
+
+PosEffect:
+  name: 开平方向
+  type: enum
+  fields:
+    - {key: Open, val: 'o', name: '开'}
+    - {key: Close, val: 'c', name: '平'}
+
+PriceType:
+  name: 价格类型
+  type: enum
+  fields:
+    - {key: Limit, val: 'l', name: '限价'}
+    - {key: Market, val: 'm', name: '市价'}
+    - {key: MakerOnly, val: 'y', name: '仅Maker'}
+    - {key: Fok, val: 'o', name: '全部成交或立即取消单'}
+    - {key: Fak, val: 'a', name: '立即成交并取消剩余单(IOC)'}
+
+OrderSource:
+  name: 委托来源
+  type: enum
+  fields:
+    - {key: Local, val: 'l', name: '本地'}
+    - {key: Foreign, val: 'f', name: '外系统'}
+
+TradeMode:
+  name: 交易模式
+  type: enum
+  fields:
+    - {key: Isolated, val: 'i', name: '保证金逐仓'}
+    - {key: Cross, val: 'c', name: '保证金全仓'}
+    - {key: Cash, val: 'h', name: '现金'}
+    - {key: SpotIsolated, val: 's', name: '现货逐仓(仅适用于现货带单) ，现货带单时，tdMode 的值需要指定为spot_isolated'}
+
+InstType:
+  name: 标的类型
+  type: enum
+  fields:
+    - {key: Spot, val: 's', name: '币币'}
+    - {key: Margin, val: 'm', name: '币币杠杆'}
+    - {key: Swap, val: 'w', name: '永续合约'}
+    - {key: Futures, val: 'f', name: '交割合约'}
+    - {key: Option, val: 'o', name: '期权'}
+
+KLineScale:
+  name: K线尺度
+  type: enum
+  fields:
+    - {key: Year, val: 'Y', name: '年'}
+    - {key: Mon, val: 'm', name: '月'}
+    - {key: Day, val: 'd', name: '日'}
+    - {key: Hour, val: 'H', name: '时'}
+    - {key: Min, val: 'M', name: '分'}
+    - {key: Sec, val: 'S', name: '秒'}
+
+PosSource:
+  name: 持仓来源
+  type: enum
+  fields:
+    - {key: Exchange, val: 'E', name: '交易所推送'}
+    - {key: Strategy, val: 'S', name: '策略计算'}
+

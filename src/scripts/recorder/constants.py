@@ -1,0 +1,2 @@
+CLICKHOUSE = 'clickhouse'
+CSV = 'csv'
