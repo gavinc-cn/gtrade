@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GTrade - High-Performance Quantitative Crypto Trading Platform</title>
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0a0e17;--bg2:#0f1420;--bg3:#151b2b;
+  --accent:#00d4ff;--accent2:#00ff88;--accent3:#7b61ff;
+  --text:#e0e6f0;--text2:#8892a4;--text3:#5a6478;
+  --border:#1e2a3a;
+}
+html{scroll-behavior:smooth}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;overflow-x:hidden}
+a{color:var(--accent);text-decoration:none}
+
+/* ====== NAV ====== */
+nav{position:fixed;top:0;left:0;right:0;z-index:100;padding:1rem 2rem;display:flex;justify-content:space-between;align-items:center;background:rgba(10,14,23,.85);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+nav .logo{font-size:1.4rem;font-weight:700;letter-spacing:2px;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+nav .nav-links{display:flex;gap:2rem;list-style:none}
+nav .nav-links a{color:var(--text2);font-size:.9rem;transition:color .3s}
+nav .nav-links a:hover{color:var(--accent)}
+nav .github-btn{padding:.5rem 1.2rem;border:1px solid var(--accent);border-radius:6px;color:var(--accent);font-size:.85rem;transition:all .3s}
+nav .github-btn:hover{background:var(--accent);color:var(--bg)}
+
+/* ====== HERO ====== */
+.hero{min-height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;padding:6rem 2rem 4rem;position:relative;overflow:hidden}
+.hero::before{content:'';position:absolute;inset:0;background:
+  radial-gradient(ellipse 600px 400px at 50% 40%,rgba(0,212,255,.08),transparent),
+  radial-gradient(ellipse 400px 300px at 30% 60%,rgba(123,97,255,.06),transparent),
+  radial-gradient(ellipse 400px 300px at 70% 50%,rgba(0,255,136,.05),transparent);pointer-events:none}
+.grid-bg{position:absolute;inset:0;background-image:
+  linear-gradient(rgba(0,212,255,.04) 1px,transparent 1px),
+  linear-gradient(90deg,rgba(0,212,255,.04) 1px,transparent 1px);
+  background-size:60px 60px;mask-image:radial-gradient(ellipse 70% 60% at 50% 50%,black,transparent);pointer-events:none}
+.hero h1{font-size:clamp(3rem,8vw,5.5rem);font-weight:800;letter-spacing:6px;margin-bottom:.5rem;background:linear-gradient(135deg,var(--accent),var(--accent2),var(--accent3));-webkit-background-clip:text;-webkit-text-fill-color:transparent;position:relative}
+.hero .subtitle-en{font-size:clamp(1rem,2.5vw,1.4rem);color:var(--text2);margin-bottom:.3rem;font-weight:300}
+.hero .subtitle-cn{font-size:clamp(.95rem,2vw,1.2rem);color:var(--text3);margin-bottom:2rem}
+.hero .badges{display:flex;flex-wrap:wrap;gap:.6rem;justify-content:center;margin-bottom:2.5rem}
+.badge{padding:.35rem .9rem;border-radius:20px;font-size:.8rem;font-weight:500;border:1px solid var(--border);background:var(--bg2);color:var(--text2)}
+.badge.cpp{border-color:#6b8dd6;color:#6b8dd6}
+.badge.python{border-color:#4ea83d;color:#4ea83d}
+.badge.vue{border-color:#42b883;color:#42b883}
+.badge.ai{border-color:#a855f7;color:#a855f7}
+.badge.grpc{border-color:#4db8ff;color:#4db8ff}
+.badge.docker{border-color:#2496ed;color:#2496ed}
+.hero .cta-group{display:flex;gap:1rem;flex-wrap:wrap;justify-content:center}
+.btn{padding:.75rem 2rem;border-radius:8px;font-size:.95rem;font-weight:600;cursor:pointer;transition:all .3s;border:none}
+.btn-primary{background:linear-gradient(135deg,var(--accent),var(--accent2));color:var(--bg)}
+.btn-primary:hover{transform:translateY(-2px);box-shadow:0 8px 30px rgba(0,212,255,.3)}
+.btn-outline{background:transparent;border:1px solid var(--border);color:var(--text)}
+.btn-outline:hover{border-color:var(--accent);color:var(--accent)}
+.hero .scroll-hint{position:absolute;bottom:2rem;animation:bounce 2s infinite}
+@keyframes bounce{0%,100%{transform:translateY(0)}50%{transform:translateY(8px)}}
+
+/* ====== SECTIONS ====== */
+section{padding:5rem 2rem;max-width:1200px;margin:0 auto}
+.section-title{text-align:center;margin-bottom:3rem}
+.section-title h2{font-size:clamp(1.8rem,4vw,2.5rem);font-weight:700;margin-bottom:.5rem}
+.section-title h2 .gradient{background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.section-title p{color:var(--text2);font-size:1rem}
+.section-title .cn{color:var(--text3);font-size:.9rem;margin-top:.3rem}
+
+/* ====== FEATURES ====== */
+.features-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:1.5rem}
+.feature-card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:2rem;transition:all .4s;position:relative;overflow:hidden}
+.feature-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--accent),transparent);opacity:0;transition:opacity .4s}
+.feature-card:hover{border-color:rgba(0,212,255,.3);transform:translateY(-4px);box-shadow:0 12px 40px rgba(0,0,0,.4)}
+.feature-card:hover::before{opacity:1}
+.feature-card .icon{width:48px;height:48px;border-radius:10px;display:flex;align-items:center;justify-content:center;margin-bottom:1.2rem;font-size:1.5rem;background:rgba(0,212,255,.08);border:1px solid rgba(0,212,255,.15)}
+.feature-card h3{font-size:1.15rem;margin-bottom:.3rem}
+.feature-card .desc-en{color:var(--text2);font-size:.88rem;margin-bottom:.2rem}
+.feature-card .desc-cn{color:var(--text3);font-size:.82rem}
+
+/* ====== ARCHITECTURE ====== */
+.arch-container{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:2.5rem;overflow-x:auto}
+.arch-layers{display:flex;flex-direction:column;gap:1.2rem}
+.arch-layer{border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.5rem;position:relative}
+.arch-layer .layer-label{position:absolute;top:-.6rem;left:1.2rem;background:var(--bg2);padding:0 .6rem;font-size:.75rem;color:var(--accent);font-weight:600;letter-spacing:1px;text-transform:uppercase}
+.arch-layer .layer-items{display:flex;flex-wrap:wrap;gap:.8rem;justify-content:center}
+.arch-item{padding:.4rem 1rem;border-radius:6px;font-size:.85rem;background:var(--bg3);border:1px solid var(--border);color:var(--text2);white-space:nowrap}
+.arch-item.highlight{border-color:var(--accent);color:var(--accent)}
+.arch-arrow{text-align:center;color:var(--text3);font-size:.9rem;padding:.3rem 0}
+
+/* ====== TECH STACK ====== */
+.tech-layers{display:flex;flex-direction:column;gap:1.5rem}
+.tech-layer{display:flex;align-items:flex-start;gap:1.5rem;flex-wrap:wrap}
+.tech-layer-label{min-width:120px;font-size:.85rem;font-weight:600;color:var(--accent);padding-top:.4rem;letter-spacing:.5px}
+.tech-tags{display:flex;flex-wrap:wrap;gap:.5rem}
+.tech-tag{padding:.35rem .8rem;border-radius:6px;font-size:.8rem;background:var(--bg2);border:1px solid var(--border);color:var(--text2);transition:all .3s}
+.tech-tag:hover{border-color:var(--accent);color:var(--accent)}
+
+/* ====== STRATEGY ====== */
+.strategy-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1.2rem}
+.strategy-card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:1.5rem;transition:all .3s}
+.strategy-card:hover{border-color:rgba(0,255,136,.3)}
+.strategy-card .strat-name{font-size:1rem;font-weight:600;margin-bottom:.3rem;color:var(--accent2)}
+.strategy-card .strat-en{font-size:.85rem;color:var(--text2)}
+.strategy-card .strat-cn{font-size:.8rem;color:var(--text3)}
+
+.pipeline{display:flex;gap:1rem;justify-content:center;flex-wrap:wrap;margin-top:2.5rem}
+.pipeline-step{text-align:center;padding:1.5rem 1.2rem;background:var(--bg2);border:1px solid var(--border);border-radius:10px;flex:1;min-width:200px;max-width:280px;position:relative}
+.pipeline-step .step-num{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.85rem;font-weight:700;margin:0 auto .8rem;background:linear-gradient(135deg,var(--accent),var(--accent3));color:var(--bg)}
+.pipeline-step h4{font-size:.95rem;margin-bottom:.3rem}
+.pipeline-step p{font-size:.8rem;color:var(--text2)}
+.pipeline-arrow{display:flex;align-items:center;color:var(--text3);font-size:1.5rem}
+
+/* ====== FOOTER ====== */
+footer{border-top:1px solid var(--border);padding:3rem 2rem;text-align:center}
+footer .footer-logo{font-size:1.2rem;font-weight:700;letter-spacing:2px;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:.5rem}
+footer p{color:var(--text3);font-size:.85rem}
+
+/* ====== ANIMATIONS ====== */
+.fade-in{opacity:0;transform:translateY(30px);transition:opacity .6s ease,transform .6s ease}
+.fade-in.visible{opacity:1;transform:translateY(0)}
+
+/* ====== RESPONSIVE ====== */
+@media(max-width:768px){
+  nav .nav-links{display:none}
+  .features-grid{grid-template-columns:1fr}
+  .tech-layer{flex-direction:column;gap:.5rem}
+  .pipeline{flex-direction:column;align-items:center}
+  .pipeline-arrow{transform:rotate(90deg)}
+}
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <div class="logo">GTRADE</div>
+  <ul class="nav-links">
+    <li><a href="#features">Features</a></li>
+    <li><a href="#architecture">Architecture</a></li>
+    <li><a href="#techstack">Tech Stack</a></li>
+    <li><a href="#strategy">Strategy</a></li>
+  </ul>
+  <a href="https://github.com/gavinc-cn/gtrade" target="_blank" class="github-btn">GitHub</a>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="grid-bg"></div>
+  <h1>GTRADE</h1>
+  <p class="subtitle-en">High-Performance Quantitative Crypto Trading Platform</p>
+  <p class="subtitle-cn">高性能量化加密货币交易平台</p>
+  <div class="badges">
+    <span class="badge cpp">C++17</span>
+    <span class="badge python">Python 3.12</span>
+    <span class="badge vue">Vue 3</span>
+    <span class="badge ai">AI / MCP</span>
+    <span class="badge grpc">gRPC</span>
+    <span class="badge docker">Docker</span>
+  </div>
+  <div class="cta-group">
+    <a href="https://github.com/gavinc-cn/gtrade" target="_blank" class="btn btn-primary">View on GitHub</a>
+    <a href="#features" class="btn btn-outline">Explore Features</a>
+  </div>
+  <div class="scroll-hint">
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#5a6478" stroke-width="2"><path d="M7 13l5 5 5-5M7 6l5 5 5-5"/></svg>
+  </div>
+</section>
+
+<!-- FEATURES -->
+<section id="features">
+  <div class="section-title fade-in">
+    <h2>Core <span class="gradient">Features</span></h2>
+    <p>Built for professional quantitative trading</p>
+    <p class="cn">面向专业量化交易的完整功能矩阵</p>
+  </div>
+  <div class="features-grid">
+    <div class="feature-card fade-in">
+      <div class="icon">&#9889;</div>
+      <h3>Ultra-Low Latency Engine</h3>
+      <p class="desc-en">C++17 message-driven architecture with lock-free shared memory IPC. SIMD-accelerated JSON parsing via sonic_json.</p>
+      <p class="desc-cn">C++17 消息驱动架构 + 无锁共享内存 IPC，SIMD 加速 JSON 解析，关键路径亚微秒级延迟</p>
+    </div>
+    <div class="feature-card fade-in">
+      <div class="icon">&#9881;</div>
+      <h3>3-Tier Strategy Isolation</h3>
+      <p class="desc-en">Unified IStrategyProxy interface supporting in-process, subprocess (shared memory ring buffer), and remote (ZMQ) deployment.</p>
+      <p class="desc-cn">统一 IStrategyProxy 接口，支持进程内、子进程、远程三种部署模式，按需平衡延迟与安全</p>
+    </div>
+    <div class="feature-card fade-in">
+      <div class="icon">&#128640;</div>
+      <h3>High Availability</h3>
+      <p class="desc-en">Primary/Standby auto-failover, shared memory WAL ring buffer (&lt;1μs write), periodic snapshots, anti-brain-split Term mechanism.</p>
+      <p class="desc-cn">主备自动切换，共享内存 WAL 环缓冲区（写入延迟 &lt;1μs），定期快照恢复，防脑裂 Term 机制</p>
+    </div>
+    <div class="feature-card fade-in">
+      <div class="icon">&#128200;</div>
+      <h3>Professional Backtesting</h3>
+      <p class="desc-en">CSV replay with orderbook simulation mode. Adjustable speed, zero code change between live and backtest.</p>
+      <p class="desc-cn">CSV 历史数据回放，支持 Orderbook 撮合模拟，可调速度，策略代码零修改切换实盘/回测</p>
+    </div>
+    <div class="feature-card fade-in">
+      <div class="icon">&#128268;</div>
+      <h3>Dynamic Plugin System</h3>
+      <p class="desc-en">Strategies compiled as .so shared libraries, runtime dlopen hot-loading, self-registering factory pattern, CMake macro one-click build.</p>
+      <p class="desc-cn">策略编译为 .so 共享库，运行时 dlopen 热加载，自注册工厂模式，CMake 宏一键构建</p>
+    </div>
+    <div class="feature-card fade-in">
+      <div class="icon">&#129302;</div>
+      <h3>AI-Native Integration</h3>
+      <p class="desc-en">MCP protocol integration with AI assistants. Natural language strategy management, AI code generation, AutoResearch pipeline.</p>
+      <p class="desc-cn">通过 MCP 协议与 AI 深度集成，自然语言管理策略、AI 代码生成、AutoResearch 自动研究流水线</p>
+    </div>
+  </div>
+</section>
+
+<!-- ARCHITECTURE -->
+<section id="architecture">
+  <div class="section-title fade-in">
+    <h2>System <span class="gradient">Architecture</span></h2>
+    <p>Layered design for scalability and maintainability</p>
+    <p class="cn">分层架构设计，兼顾扩展性与可维护性</p>
+  </div>
+  <div class="arch-container fade-in">
+    <div class="arch-layers">
+      <div class="arch-layer">
+        <span class="layer-label">Client Layer</span>
+        <div class="layer-items">
+          <span class="arch-item highlight">Vue 3 Web Console</span>
+          <span class="arch-item highlight">Qt5 Desktop App</span>
+          <span class="arch-item">MCP AI Assistant</span>
+        </div>
+      </div>
+      <div class="arch-arrow">&#9660;</div>
+      <div class="arch-layer">
+        <span class="layer-label">API Layer</span>
+        <div class="layer-items">
+          <span class="arch-item">Flask REST API</span>
+          <span class="arch-item">gRPC / TLS</span>
+          <span class="arch-item">HTTP Gateway</span>
+          <span class="arch-item">WebSocket Server</span>
+        </div>
+      </div>
+      <div class="arch-arrow">&#9660;</div>
+      <div class="arch-layer">
+        <span class="layer-label">Core Engine</span>
+        <div class="layer-items">
+          <span class="arch-item highlight">Strategy Engine</span>
+          <span class="arch-item highlight">Strategy Plugins (.so)</span>
+          <span class="arch-item">Backtest Engine</span>
+          <span class="arch-item">HA / WAL Service</span>
+          <span class="arch-item">Reconciliation</span>
+        </div>
+      </div>
+      <div class="arch-arrow">&#9660;</div>
+      <div class="arch-layer">
+        <span class="layer-label">Infrastructure</span>
+        <div class="layer-items">
+          <span class="arch-item">OKX WebSocket</span>
+          <span class="arch-item">MySQL / ClickHouse</span>
+          <span class="arch-item">Shared Memory IPC</span>
+          <span class="arch-item">Slack Alerts</span>
+          <span class="arch-item">Docker Compose</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- TECH STACK -->
+<section id="techstack">
+  <div class="section-title fade-in">
+    <h2>Tech <span class="gradient">Stack</span></h2>
+    <p>Modern technologies powering every layer</p>
+    <p class="cn">各层采用现代化技术栈</p>
+  </div>
+  <div class="tech-layers fade-in">
+    <div class="tech-layer">
+      <div class="tech-layer-label">Core Engine</div>
+      <div class="tech-tags">
+        <span class="tech-tag">C++17</span><span class="tech-tag">CMake</span><span class="tech-tag">Boost.Asio</span><span class="tech-tag">spdlog</span><span class="tech-tag">sonic_json</span><span class="tech-tag">TA-Lib</span><span class="tech-tag">Crypto++</span><span class="tech-tag">LZ4</span>
+      </div>
+    </div>
+    <div class="tech-layer">
+      <div class="tech-layer-label">Networking</div>
+      <div class="tech-tags">
+        <span class="tech-tag">WebSocket++</span><span class="tech-tag">cpp-httplib</span><span class="tech-tag">gRPC</span><span class="tech-tag">ZMQ</span><span class="tech-tag">Protobuf</span>
+      </div>
+    </div>
+    <div class="tech-layer">
+      <div class="tech-layer-label">Storage</div>
+      <div class="tech-tags">
+        <span class="tech-tag">MySQL 8.0</span><span class="tech-tag">ClickHouse</span><span class="tech-tag">Shared Memory IPC</span>
+      </div>
+    </div>
+    <div class="tech-layer">
+      <div class="tech-layer-label">Web Frontend</div>
+      <div class="tech-tags">
+        <span class="tech-tag">Vue 3.4</span><span class="tech-tag">Element Plus</span><span class="tech-tag">Vite 5</span>
+      </div>
+    </div>
+    <div class="tech-layer">
+      <div class="tech-layer-label">Web Backend</div>
+      <div class="tech-tags">
+        <span class="tech-tag">Python 3.12</span><span class="tech-tag">Flask</span><span class="tech-tag">SQLAlchemy</span><span class="tech-tag">PyJWT</span>
+      </div>
+    </div>
+    <div class="tech-layer">
+      <div class="tech-layer-label">Desktop</div>
+      <div class="tech-tags">
+        <span class="tech-tag">Qt5</span><span class="tech-tag">gRPC</span><span class="tech-tag">Conan</span>
+      </div>
+    </div>
+    <div class="tech-layer">
+      <div class="tech-layer-label">AI Integration</div>
+      <div class="tech-tags">
+        <span class="tech-tag">FastMCP</span><span class="tech-tag">Anthropic Claude</span><span class="tech-tag">AutoResearch</span>
+      </div>
+    </div>
+    <div class="tech-layer">
+      <div class="tech-layer-label">Deployment</div>
+      <div class="tech-tags">
+        <span class="tech-tag">Docker</span><span class="tech-tag">Docker Compose</span><span class="tech-tag">Shell Scripts</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STRATEGY -->
+<section id="strategy">
+  <div class="section-title fade-in">
+    <h2>Strategy <span class="gradient">Ecosystem</span></h2>
+    <p>Built-in strategies and AI-powered research pipeline</p>
+    <p class="cn">内置策略与 AI 驱动的研究流水线</p>
+  </div>
+  <div class="strategy-grid fade-in">
+    <div class="strategy-card">
+      <div class="strat-name">SpotGrid</div>
+      <div class="strat-en">Spot grid trading strategy</div>
+      <div class="strat-cn">现货网格交易策略</div>
+    </div>
+    <div class="strategy-card">
+      <div class="strat-name">StratSMA</div>
+      <div class="strat-en">SMA moving average crossover</div>
+      <div class="strat-cn">SMA 均线交叉策略</div>
+    </div>
+    <div class="strategy-card">
+      <div class="strat-name">FutureArbitrageV3</div>
+      <div class="strat-en">Futures arbitrage (spot vs perpetual)</div>
+      <div class="strat-cn">期货套利策略（现货 vs 永续合约）</div>
+    </div>
+    <div class="strategy-card">
+      <div class="strat-name">IndicatorKline</div>
+      <div class="strat-en">K-line indicator recording</div>
+      <div class="strat-cn">K 线指标记录策略</div>
+    </div>
+    <div class="strategy-card">
+      <div class="strat-name">StratSpotGridFull</div>
+      <div class="strat-en">Advanced spot grid with full parameters</div>
+      <div class="strat-cn">高级现货网格策略</div>
+    </div>
+    <div class="strategy-card">
+      <div class="strat-name">StrategyRecorder</div>
+      <div class="strat-en">Market data recording &amp; replay</div>
+      <div class="strat-cn">行情数据录制策略</div>
+    </div>
+  </div>
+
+  <div class="section-title fade-in" style="margin-top:3.5rem;margin-bottom:1.5rem">
+    <h2>AutoResearch <span class="gradient">Pipeline</span></h2>
+    <p>AI-driven end-to-end strategy research</p>
+    <p class="cn">AI 驱动的端到端策略研究流水线</p>
+  </div>
+  <div class="pipeline fade-in">
+    <div class="pipeline-step">
+      <div class="step-num">1</div>
+      <h4>Generate</h4>
+      <p>AI generates strategy code based on market characteristics</p>
+      <p style="color:var(--text3);font-size:.78rem;margin-top:.3rem">AI 根据市场特征自动生成策略代码</p>
+    </div>
+    <div class="pipeline-arrow">&#10132;</div>
+    <div class="pipeline-step">
+      <div class="step-num">2</div>
+      <h4>Backtest</h4>
+      <p>Compile &amp; run multi-parameter parallel backtesting</p>
+      <p style="color:var(--text3);font-size:.78rem;margin-top:.3rem">编译并运行多参数组合并行回测</p>
+    </div>
+    <div class="pipeline-arrow">&#10132;</div>
+    <div class="pipeline-step">
+      <div class="step-num">3</div>
+      <h4>Deploy</h4>
+      <p>Auto-evaluate (Sharpe/Calmar) → Human approval → Live trading</p>
+      <p style="color:var(--text3);font-size:.78rem;margin-top:.3rem">自动筛选评估 → 人工审批 → 实盘部署</p>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <div class="footer-logo">GTRADE</div>
+  <p>High-Performance Quantitative Crypto Trading Platform</p>
+  <p style="margin-top:.5rem"><a href="https://github.com/gavinc-cn/gtrade" target="_blank">github.com/gavinc-cn/gtrade</a></p>
+  <p style="margin-top:.8rem;color:var(--text3)">&copy; 2024-2026 GTrade. All rights reserved.</p>
+</footer>
+
+<script>
+document.addEventListener('DOMContentLoaded',function(){
+  var observer=new IntersectionObserver(function(entries){
+    entries.forEach(function(entry){
+      if(entry.isIntersecting){
+        entry.target.classList.add('visible');
+      }
+    });
+  },{threshold:0.1,rootMargin:'0px 0px -40px 0px'});
+  document.querySelectorAll('.fade-in').forEach(function(el){
+    observer.observe(el);
+  });
+});
+</script>
+</body>
+</html>
