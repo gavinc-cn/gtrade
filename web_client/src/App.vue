@@ -17,6 +17,11 @@
           text-color="#b0b0b0"
           active-text-color="#409eff"
         >
+          <!-- 手动下单为默认落地页（router '/' → /manual-orders），放第一项 -->
+          <el-menu-item index="/manual-orders">
+            <el-icon><Aim /></el-icon>
+            <span>手动下单</span>
+          </el-menu-item>
           <el-menu-item index="/strategy">
             <el-icon><Histogram /></el-icon>
             <span>策略管理</span>
@@ -40,6 +45,10 @@
           <el-menu-item index="/balances">
             <el-icon><Coin /></el-icon>
             <span>资金管理</span>
+          </el-menu-item>
+          <el-menu-item index="/settings">
+            <el-icon><Setting /></el-icon>
+            <span>设置</span>
           </el-menu-item>
         </el-menu>
       </el-aside>

@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "mkdir -p /tmp/gtrade && vite 2>&1 | tee /tmp/gtrade/web_client.log",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.0",

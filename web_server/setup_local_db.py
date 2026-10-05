@@ -11,16 +11,6 @@ import time
 import subprocess
 import json
 from datetime import datetime
-from pathlib import Path
-from dotenv import load_dotenv
-
-# 加载 .env 文件
-env_path = Path(__file__).parent.parent / '.env'
-if env_path.exists():
-    load_dotenv(env_path)
-
-DB_PASSWORD = os.environ.get('DB_PASSWORD', '')
-MYSQL_ROOT_PASSWORD = os.environ.get('MYSQL_ROOT_PASSWORD', '')
 
 def run_command(cmd, check=True, shell=False):
     """执行命令"""
@@ -68,7 +58,7 @@ def start_mysql_container():
     print("等待MySQL启动...")
     for i in range(30):
         result = run_command(
-            ["docker", "exec", "gtrade_mysql", "mysqladmin", "ping", "-h", "localhost", "-uroot", f"-p{MYSQL_ROOT_PASSWORD}"],
+            ["docker", "exec", "gtrade_mysql", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-pgtrade123"],
             check=False
         )
         if result.returncode == 0:
@@ -95,13 +85,13 @@ def init_database():
 
     # 使用docker exec执行SQL
     result = run_command(
-        ["docker", "exec", "-i", "gtrade_mysql", "mysql", "-ugtrade", f"-p{DB_PASSWORD}", "gtrade"],
+        ["docker", "exec", "-i", "gtrade_mysql", "mysql", "-ugtrade", "-pgtrade123", "gtrade"],
         check=False
     )
 
     # 通过stdin传递SQL
     result = subprocess.run(
-        ["docker", "exec", "-i", "gtrade_mysql", "mysql", "-ugtrade", f"-p{DB_PASSWORD}", "gtrade"],
+        ["docker", "exec", "-i", "gtrade_mysql", "mysql", "-ugtrade", "-pgtrade123", "gtrade"],
         input=sql_content,
         capture_output=True,
         text=True
@@ -136,7 +126,7 @@ def insert_sample_data():
             host='localhost',
             port=3307,
             user='gtrade',
-            password=DB_PASSWORD,
+            password='gtrade123',
             database='gtrade',
             charset='utf8mb4'
         )

@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>手动下单 · 布局 Demo（GTrade web_client 设计稿）</title>
+<style>
+/* ── 设计令牌（与 ManualOrderManager.vue 一致） ───────────────────────── */
+:root {
+  --base: #2c2c2c;      /* 墨盘底 */
+  --panel: #353535;     /* 票据面 */
+  --panel-2: #2a2a2a;
+  --line: #404040;
+  --text: #e0e0e0;
+  --muted: #909090;
+  --buy: #e5484d;       /* 买·红（翻转习惯只需对调两个值） */
+  --sell: #30a46c;      /* 卖·绿 */
+  --accent: var(--buy);
+  --accent-dim: rgba(229, 72, 77, .16);
+  --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Consolas, 'Courier New', monospace;
+  --sans: -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  font-family: var(--sans);
+  font-size: 14px;
+  background: var(--base);
+  color: var(--text);
+}
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); }
+
+/* ── 应用壳：侧栏 + 顶栏（简化还原 App.vue 布局） ─────────────────────── */
+.app { display: flex; height: 100vh; }
+.sidebar {
+  width: 200px;
+  flex: none;
+  background: #1e1e1e;
+  box-shadow: 2px 0 8px rgba(0, 0, 0, .3);
+  display: flex;
+  flex-direction: column;
+}
+.logo {
+  padding: 20px;
+  text-align: center;
+  border-bottom: 1px solid var(--line);
+  color: #409eff;
+  font-size: 22px;
+  font-weight: 700;
+}
+.nav { display: flex; flex-direction: column; padding: 8px 0; }
+.nav a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 20px;
+  height: 52px;
+  color: #b0b0b0;
+  text-decoration: none;
+  border-left: 3px solid transparent;
+}
+.nav a:hover { background: #2a2a2a; }
+.nav a.active { background: #263445; color: #409eff; border-left-color: #409eff; }
+.nav .dot { width: 8px; height: 8px; border-radius: 2px; background: #555; flex: none; }
+.nav a.active .dot { background: #409eff; }
+
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.topbar {
+  height: 60px;
+  flex: none;
+  background: #1e1e1e;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .3);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+}
+.topbar .title { font-size: 18px; font-weight: 700; }
+.topbar .right { display: flex; align-items: center; gap: 16px; color: var(--muted); font-size: 13px; }
+.topbar .logout {
+  background: #943333;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.content { flex: 1; overflow-y: auto; padding: 16px; }
+
+/* ── 页面主体 ──────────────────────────────────────────────────────────── */
+.page.is-sell { --accent: var(--sell); --accent-dim: rgba(48, 164, 108, .16); }
+.page { display: flex; flex-direction: column; gap: 16px; }
+
+.ticket-grid {
+  display: grid;
+  grid-template-columns: minmax(360px, 440px) 1fr;
+  gap: 16px;
+  align-items: stretch;
+}
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  font-weight: 600;
+  font-size: 14px;
+}
+.card-head .sub { font-size: 12px; color: #a8a8a8; font-weight: 400; display: inline-flex; align-items: center; gap: 8px; }
+.panel .body { padding: 16px; }
+.tag-mock {
+  font-size: 11px;
+  color: #e9b44c;
+  background: rgba(233, 180, 76, .15);
+  border: 1px solid rgba(233, 180, 76, .5);
+  border-radius: 3px;
+  padding: 1px 6px;
+}
+
+/* ── 表单 ── */
+.form { display: flex; flex-direction: column; gap: 14px; }
+.field { display: flex; flex-direction: column; gap: 6px; flex: 1; }
+.field > label { font-size: 12px; color: var(--muted); }
+.field-row { display: flex; gap: 12px; }
+select, .mono-input {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 9px 12px;
+  font-size: 14px;
+  width: 100%;
+}
+select:focus, .mono-input:focus { outline: none; border-color: var(--accent); }
+.mono-input { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 16px; }
+.mono-input:disabled { opacity: .45; cursor: not-allowed; }
+.mono-input::placeholder { color: #6b6b6b; font-size: 13px; }
+
+.seg { display: flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.seg button {
+  flex: 1;
+  padding: 7px 0;
+  font-size: 12px;
+  background: var(--panel-2);
+  color: var(--muted);
+  border: none;
+  border-right: 1px solid var(--line);
+  cursor: pointer;
+  font-family: var(--sans);
+}
+.seg button:last-child { border-right: none; }
+.seg button:hover { color: var(--text); }
+.seg button.active { background: var(--accent-dim); color: var(--accent); font-weight: 600; }
+
+.side-toggle { display: flex; gap: 10px; }
+.side-btn {
+  flex: 1;
+  padding: 12px 0;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 4px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--muted);
+  cursor: pointer;
+}
+.side-btn.buy.active { background: rgba(229, 72, 77, .18); border-color: var(--buy); color: var(--buy); }
+.side-btn.sell.active { background: rgba(48, 164, 108, .18); border-color: var(--sell); color: var(--sell); }
+
+.notional { display: flex; align-items: baseline; gap: 8px; font-size: 14px; }
+.notional b { font-size: 18px; }
+
+.submit-btn {
+  padding: 13px 0;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  border: none;
+  border-radius: 4px;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+.submit-btn:hover { filter: brightness(1.1); }
+
+/* ── 盘口梯 ── */
+.ladder { display: flex; flex-direction: column; padding: 8px 0; }
+.lrow {
+  position: relative;
+  display: grid;
+  grid-template-columns: 34px 1fr 110px;
+  align-items: center;
+  padding: 3px 12px;
+  cursor: pointer;
+  line-height: 1.6;
+}
+.lrow .bar { position: absolute; top: 2px; bottom: 2px; pointer-events: none; }
+.lrow.ask .bar { right: 0; background: rgba(48, 164, 108, .22); }
+.lrow.bid .bar { left: 0; background: rgba(229, 72, 77, .22); }
+.lrow:hover { background: rgba(255, 255, 255, .05); }
+.lrow.sel.ask { box-shadow: inset 0 0 0 1px var(--sell); border-radius: 3px; }
+.lrow.sel.bid { box-shadow: inset 0 0 0 1px var(--buy); border-radius: 3px; }
+.lrow .lv { color: var(--muted); font-size: 11px; }
+.lrow .px { text-align: right; }
+.lrow.ask .px { color: var(--sell); }
+.lrow.bid .px { color: var(--buy); }
+.lrow .sz { text-align: right; color: var(--text); font-size: 12px; }
+.mid {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 7px 12px;
+  margin: 2px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+  font-size: 15px;
+}
+.ladder-hint { font-size: 11px; text-align: center; color: var(--muted); padding: 10px 0 4px; }
+
+/* ── 未成交委托表 ── */
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { padding: 9px 12px; text-align: left; }
+th {
+  background: var(--panel-2);
+  color: var(--text);
+  font-weight: 600;
+  border-bottom: 1px solid var(--line);
+}
+td { border-bottom: 1px solid #3d3d3d; }
+tbody tr:hover { background: var(--panel-2); }
+td.r, th.r { text-align: right; }
+.side-tag { font-weight: 700; }
+.side-tag.b { color: var(--buy); }
+.side-tag.s { color: var(--sell); }
+.st {
+  font-size: 11px;
+  color: #fff;
+  border-radius: 3px;
+  padding: 2px 7px;
+}
+.st.amber { background: #daa520; }
+.st.orange { background: #e8961c; }
+.st.green { background: #52c41a; }
+.st.blue { background: #1890ff; }
+.cancel-btn {
+  background: transparent;
+  border: 1px solid #943333;
+  color: #e05a5a;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.cancel-btn:hover { background: rgba(148, 51, 51, .3); }
+
+/* ── 确认票据弹窗 ── */
+.mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, .5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+.mask.hidden { display: none; }
+.dialog {
+  width: 430px;
+  background: #353535;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 18px;
+}
+.ticket-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 14px;
+  border-radius: 4px;
+  color: #fff;
+  margin-bottom: 12px;
+}
+.ticket-head.buy { background: var(--buy); }
+.ticket-head.sell { background: var(--sell); }
+.ticket-head .word { font-size: 17px; font-weight: 800; letter-spacing: 6px; }
+.trow {
+  display: flex;
+  justify-content: space-between;
+  padding: 9px 2px;
+  border-bottom: 1px dashed var(--line);
+  font-size: 13px;
+}
+.trow span { color: var(--muted); }
+.trow b { font-weight: 600; }
+.ticket-note { font-size: 11px; color: var(--muted); margin-top: 10px; }
+.dialog .foot { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+.btn {
+  padding: 8px 18px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+}
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+
+/* toast（demo 提示用） */
+#toast {
+  position: fixed;
+  top: 72px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #3f7a24;
+  color: #fff;
+  padding: 9px 18px;
+  border-radius: 4px;
+  font-size: 13px;
+  opacity: 0;
+  transition: opacity .25s;
+  pointer-events: none;
+  z-index: 20;
+}
+#toast.show { opacity: 1; }
+
+@media (max-width: 900px) {
+  .app { flex-direction: column; }
+  .sidebar { width: 100%; flex-direction: row; align-items: center; }
+  .logo { border-bottom: none; padding: 12px 16px; }
+  .nav { flex-direction: row; overflow-x: auto; padding: 0; }
+  .nav a { border-left: none; white-space: nowrap; }
+  .ticket-grid { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- 简化侧栏：示意页面在整个应用中的位置 -->
+  <aside class="sidebar">
+    <div class="logo">GTrade</div>
+    <nav class="nav">
+      <a href="#"><span class="dot"></span>策略管理</a>
+      <a href="#"><span class="dot"></span>委托管理</a>
+      <a href="#" class="active"><span class="dot"></span>手动下单</a>
+      <a href="#"><span class="dot"></span>成交管理</a>
+      <a href="#"><span class="dot"></span>持仓管理</a>
+      <a href="#"><span class="dot"></span>组合持仓管理</a>
+      <a href="#"><span class="dot"></span>资金管理</a>
+    </nav>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <span class="title">手动下单</span>
+      <span class="right"><span class="mono" id="clock">--:--:--</span><button class="logout">退出登录</button></span>
+    </header>
+
+    <main class="content">
+      <div class="page is-buy" id="page">
+        <div class="ticket-grid">
+          <!-- ① 委托票据 -->
+          <section class="panel">
+            <div class="card-head">委托票据<span class="sub mono">OKX · BTC-USDT-SWAP</span></div>
+            <div class="body form">
+              <div class="field-row">
+                <div class="field">
+                  <label>账户</label>
+                  <select id="account">
+                    <option>okx-swap-01</option>
+                    <option>okx-swap-02</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>市场</label>
+                  <select id="market">
+                    <option value="okx" selected>okx</option>
+                    <option>okx_dummy</option>
+                    <option>ctp</option>
+                  </select>
+                </div>
+              </div>
+              <div class="field-row">
+                <div class="field">
+                  <label>品种</label>
+                  <select id="inst">
+                    <option>BTC-USDT-SWAP</option>
+                    <option>ETH-USDT-SWAP</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>组合 <span class="muted" style="font-size:11px">选填</span></label>
+                  <select id="portfolio">
+                    <option value="">默认（不指定）</option>
+                    <option>momo_default</option>
+                    <option>alpha_1</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="field">
+                <label>保证金模式</label>
+                <div class="seg" id="tdSeg">
+                  <button type="button">全仓</button>
+                  <button type="button">逐仓</button>
+                  <button type="button">现货</button>
+                </div>
+              </div>
+
+              <div class="field">
+                <label>方向</label>
+                <div class="side-toggle">
+                  <button type="button" class="side-btn buy active" data-side="buy">买入</button>
+                  <button type="button" class="side-btn sell" data-side="sell">卖出</button>
+                </div>
+              </div>
+
+              <div class="field">
+                <label>委托类型</label>
+                <div class="seg" id="typeSeg">
+                  <button type="button" class="active" data-market="0">限价</button>
+                  <button type="button" data-market="1">市价</button>
+                  <button type="button" data-market="0">Post Only</button>
+                  <button type="button" data-market="0">FOK</button>
+                  <button type="button" data-market="0">IOC</button>
+                </div>
+              </div>
+
+              <div class="field-row">
+                <div class="field">
+                  <label>价格 <span class="muted" id="pxHint" style="display:none">市价免填</span></label>
+                  <input id="px" class="mono-input" placeholder="点击盘口档位填入" inputmode="decimal">
+                </div>
+                <div class="field">
+                  <label>数量</label>
+                  <input id="sz" class="mono-input" placeholder="0.000" inputmode="decimal">
+                </div>
+              </div>
+
+              <div class="notional mono">
+                <span class="muted">预估金额</span><b id="notional">—</b><span class="muted">USDT</span>
+              </div>
+
+              <button type="button" class="submit-btn" id="submit">预览买入委托</button>
+            </div>
+          </section>
+
+          <!-- ② 盘口十档 -->
+          <section class="panel">
+            <div class="card-head">盘口<span class="sub"><span class="tag-mock">模拟行情</span><span class="mono" id="depthTime">--:--:--</span></span></div>
+            <div class="ladder" id="ladder"></div>
+          </section>
+        </div>
+
+        <!-- ③ 24 小时内委托（可按状态过滤） -->
+        <section class="panel">
+          <div class="card-head">
+            24小时内委托
+            <span class="sub" style="gap:10px">
+              <span class="mono muted" id="orderCount">共 4 笔</span>
+              <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:400;color:var(--muted)">
+                <input type="checkbox" id="onlyInst"> 仅当前品种
+              </label>
+              <select id="statusFilter" style="width:130px;padding:4px 8px;font-size:12px">
+                <option value="">全部状态</option>
+                <option value="0">未报</option>
+                <option value="1">正报</option>
+                <option value="2">已报</option>
+                <option value="3">部成</option>
+                <option value="4">全部成交</option>
+                <option value="5">已报待撤</option>
+                <option value="6">场内撤单</option>
+                <option value="9">废单</option>
+              </select>
+            </span>
+          </div>
+          <table id="orderTable">
+            <thead>
+              <tr>
+                <th>委托号</th><th>品种</th><th>组合</th><th>方向</th><th class="r">价格</th><th class="r">数量</th>
+                <th class="r">已成交</th><th class="r">剩余</th><th>状态</th><th>时间</th><th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr data-inst="BTC-USDT-SWAP" data-status="3">
+                <td class="mono">100237</td>
+                <td class="mono">BTC-USDT-SWAP</td>
+                <td class="mono muted">momo_default</td>
+                <td><span class="side-tag b">买</span></td>
+                <td class="r mono">64,198.5</td>
+                <td class="r mono">0.150</td>
+                <td class="r mono">0.050</td>
+                <td class="r mono">0.100</td>
+                <td><span class="st orange">部成</span></td>
+                <td class="mono muted">09/28 10:20:00</td>
+                <td><button class="cancel-btn">撤单</button></td>
+              </tr>
+              <tr data-inst="BTC-USDT-SWAP" data-status="2">
+                <td class="mono">100241</td>
+                <td class="mono">BTC-USDT-SWAP</td>
+                <td class="mono muted">momo_default</td>
+                <td><span class="side-tag s">卖</span></td>
+                <td class="r mono">65,200.0</td>
+                <td class="r mono">0.200</td>
+                <td class="r mono">0.000</td>
+                <td class="r mono">0.200</td>
+                <td><span class="st amber">已报</span></td>
+                <td class="mono muted">09/28 10:21:40</td>
+                <td><button class="cancel-btn">撤单</button></td>
+              </tr>
+              <tr data-inst="ETH-USDT-SWAP" data-status="4">
+                <td class="mono">100198</td>
+                <td class="mono">ETH-USDT-SWAP</td>
+                <td class="mono muted">alpha_1</td>
+                <td><span class="side-tag b">买</span></td>
+                <td class="r mono">3,152.0</td>
+                <td class="r mono">2.000</td>
+                <td class="r mono">2.000</td>
+                <td class="r mono">0.000</td>
+                <td><span class="st green">全部成交</span></td>
+                <td class="mono muted">09/28 09:05:12</td>
+                <td></td>
+              </tr>
+              <tr data-inst="BTC-USDT-SWAP" data-status="6">
+                <td class="mono">100152</td>
+                <td class="mono">BTC-USDT-SWAP</td>
+                <td class="mono muted">—</td>
+                <td><span class="side-tag s">卖</span></td>
+                <td class="r mono">64,880.0</td>
+                <td class="r mono">0.100</td>
+                <td class="r mono">0.000</td>
+                <td class="r mono">0.100</td>
+                <td><span class="st blue">场内撤单</span></td>
+                <td class="mono muted">09/28 08:47:03</td>
+                <td></td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- 确认票据弹窗 -->
+<div class="mask hidden" id="mask">
+  <div class="dialog" role="dialog" aria-modal="true">
+    <div class="ticket-head buy" id="tkHead"><span class="word" id="tkWord">买入</span><span class="mono" id="tkInst">BTC-USDT-SWAP</span></div>
+    <div class="trow mono"><span>账户</span><b id="tkAccount">—</b></div>
+    <div class="trow mono"><span>市场</span><b id="tkMarket">—</b></div>
+    <div class="trow mono"><span>组合</span><b id="tkPortfolio">默认（不指定）</b></div>
+    <div class="trow"><span>保证金模式</span><b id="tkTd">—</b></div>
+    <div class="trow"><span>委托类型</span><b id="tkType">—</b></div>
+    <div class="trow mono"><span>价格</span><b id="tkPx">—</b></div>
+    <div class="trow mono"><span>数量</span><b id="tkSz">—</b></div>
+    <div class="trow mono"><span>预估金额</span><b id="tkAmt">—</b></div>
+    <div class="ticket-note">发出后委托先由引擎受理（返回本地委托号），交易所确认异步完成，状态以未成交委托列表为准。本页为静态布局 demo，不会真实发单。</div>
+    <div class="foot">
+      <button class="btn" id="btnCancel">取消</button>
+      <button class="btn primary" id="btnSend">确认发送</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ── 演示数据与交互（仅布局 demo，不调任何接口） ────────────────────────────
+const PX_DECIMALS = 1, SZ_DECIMALS = 3;
+const TD_LABELS = ['全仓', '逐仓', '现货'], TYPE_LABELS = ['限价', '市价', 'Post Only', 'FOK', 'IOC'];
+
+// 盘口：围绕中间价的随机十档（1s 轻微漂移，模拟行情刷新感）
+let mid = 64202.8;
+const fmt = (n, d) => n.toLocaleString('zh-CN', { minimumFractionDigits: d, maximumFractionDigits: d });
+const ladderEl = document.getElementById('ladder');
+const LEVELS = 5;
+
+function renderLadder() {
+  const mk = (base, dir) => Array.from({ length: 20 }, (_, i) => [
+    +(base + dir * (i + 1) * 0.5).toFixed(PX_DECIMALS),
+    +(Math.random() * 3 + 0.05).toFixed(SZ_DECIMALS)
+  ]);
+  const asks = mk(mid + 0.5, 1), bids = mk(mid - 0.5, -1);
+  const all = [...asks.slice(0, LEVELS), ...bids.slice(0, LEVELS)];
+  const maxSz = Math.max(...all.map(d => d[1]));
+  const row = (d, lv, cls) =>
+    `<div class="lrow ${cls}" data-px="${d[0].toFixed(PX_DECIMALS)}" title="点击填入价格 ${fmt(d[0], PX_DECIMALS)}">` +
+    `<span class="bar" style="width:${Math.max(4, Math.round(d[1] / maxSz * 100))}%"></span>` +
+    `<span class="lv mono">${String(lv).padStart(2, '0')}</span>` +
+    `<span class="px mono">${fmt(d[0], PX_DECIMALS)}</span>` +
+    `<span class="sz mono">${fmt(d[1], SZ_DECIMALS)}</span></div>`;
+  let html = '';
+  for (let i = LEVELS; i >= 1; i--) html += row(asks[i - 1], i, 'ask');   // 卖档：高价在上
+  html += `<div class="mid mono"><span>${fmt(mid, PX_DECIMALS)}</span><span class="muted" style="font-size:12px">中间价 · 价差 ${fmt(1.0, PX_DECIMALS)}</span></div>`;
+  for (let i = 1; i <= LEVELS; i++) html += row(bids[i - 1], i, 'bid');   // 买档：一档在上
+  html += '<div class="ladder-hint">点击档位价格填入委托价</div>';
+  ladderEl.innerHTML = html;
+  document.getElementById('depthTime').textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+}
+
+// 分段按钮组
+function segInit(id, onPick) {
+  const seg = document.getElementById(id);
+  seg.querySelectorAll('button').forEach((b, i) => b.addEventListener('click', () => {
+    seg.querySelectorAll('button').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    onPick && onPick(i, b);
+  }));
+}
+
+let side = 'buy', ordIdx = 0;
+const pxEl = document.getElementById('px'), szEl = document.getElementById('sz');
+
+function estNotional() {
+  const qty = parseFloat(szEl.value);
+  let px = parseFloat(pxEl.value);
+  if (ordIdx === 1) px = mid + (side === 'buy' ? 0.5 : -0.5);  // 市价按对手一档参考
+  const amt = (qty && px) ? qty * px : NaN;
+  document.getElementById('notional').textContent = isNaN(amt) ? '—' : amt.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function refreshSubmit() {
+  document.getElementById('submit').textContent = side === 'buy' ? '预览买入委托' : '预览卖出委托';
+  const market = ordIdx === 1;
+  pxEl.disabled = market;
+  document.getElementById('pxHint').style.display = market ? '' : 'none';
+  if (market) pxEl.value = '';
+}
+
+// 方向开关：页面强调色随买卖整体切换
+document.querySelectorAll('.side-btn').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('.side-btn').forEach(x => x.classList.remove('active'));
+  b.classList.add('active');
+  side = b.dataset.side;
+  const page = document.getElementById('page');
+  page.classList.toggle('is-buy', side === 'buy');
+  page.classList.toggle('is-sell', side === 'sell');
+  refreshSubmit();
+}));
+
+segInit('tdSeg');
+segInit('typeSeg', i => { ordIdx = i; refreshSubmit(); estNotional(); });
+pxEl.addEventListener('input', estNotional);
+szEl.addEventListener('input', estNotional);
+
+// 盘口点选填价（事件委托，兼容 1s 重绘）
+ladderEl.addEventListener('click', e => {
+  const r = e.target.closest('.lrow');
+  if (!r) return;
+  pxEl.value = r.dataset.px;
+  ladderEl.querySelectorAll('.lrow').forEach(x => x.classList.remove('sel'));
+  r.classList.add('sel');
+  estNotional();
+});
+
+// 预览票据弹窗
+const mask = document.getElementById('mask');
+document.getElementById('submit').addEventListener('click', () => {
+  if (!szEl.value || (!pxEl.value && ordIdx !== 1)) { toast('请先填写价格与数量（demo）'); return; }
+  const buy = side === 'buy';
+  const head = document.getElementById('tkHead');
+  head.className = 'ticket-head ' + side;
+  document.getElementById('tkWord').textContent = buy ? '买入' : '卖出';
+  document.getElementById('tkInst').textContent = document.getElementById('inst').value;
+  document.getElementById('tkAccount').textContent = document.getElementById('account').value;
+  document.getElementById('tkMarket').textContent = document.getElementById('market').value;
+  document.getElementById('tkPortfolio').textContent = document.getElementById('portfolio').value || '默认（不指定）';
+  document.getElementById('tkTd').textContent = TD_LABELS[document.querySelector('#tdSeg .active') ? [...document.getElementById('tdSeg').children].indexOf(document.querySelector('#tdSeg .active')) : 0];
+  document.getElementById('tkType').textContent = TYPE_LABELS[ordIdx];
+  document.getElementById('tkPx').textContent = ordIdx === 1 ? '市价（按盘口撮合）' : pxEl.value;
+  document.getElementById('tkSz').textContent = szEl.value;
+  document.getElementById('tkAmt').textContent = document.getElementById('notional').textContent + ' USDT';
+  mask.classList.remove('hidden');
+});
+document.getElementById('btnCancel').addEventListener('click', () => mask.classList.add('hidden'));
+mask.addEventListener('click', e => { if (e.target === mask) mask.classList.add('hidden'); });
+document.getElementById('btnSend').addEventListener('click', () => {
+  mask.classList.add('hidden');
+  toast('布局 demo：不会真实发单（真实链路见 ManualOrderManager.vue）');
+});
+
+// 撤单按钮仅视觉演示
+document.querySelectorAll('.cancel-btn').forEach(b => b.addEventListener('click', () => toast('布局 demo：撤单未接接口')));
+
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.classList.remove('show'), 2200);
+}
+
+// 委托列表过滤：状态下拉 + 仅当前品种（24h 窗口为静态数据前提）
+const statusFilterEl = document.getElementById('statusFilter');
+const onlyInstEl = document.getElementById('onlyInst');
+function applyOrderFilter() {
+  const st = statusFilterEl.value;
+  const inst = document.getElementById('inst').value;
+  let shown = 0;
+  document.querySelectorAll('#orderTable tbody tr').forEach(tr => {
+    const ok = (!st || tr.dataset.status === st) && (!onlyInstEl.checked || tr.dataset.inst === inst);
+    tr.style.display = ok ? '' : 'none';
+    if (ok) shown++;
+  });
+  document.getElementById('orderCount').textContent = '共 ' + shown + ' 笔';
+}
+statusFilterEl.addEventListener('change', applyOrderFilter);
+onlyInstEl.addEventListener('change', applyOrderFilter);
+document.getElementById('inst').addEventListener('change', () => { if (onlyInstEl.checked) applyOrderFilter(); });
+
+// 时钟 + 盘口漂移
+function tickClock() { document.getElementById('clock').textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false }); }
+renderLadder();
+tickClock();
+setInterval(() => { if (!document.hidden) { mid = Math.max(1000, mid + (Math.random() - 0.5) * 8); renderLadder(); estNotional(); } }, 1000);
+setInterval(tickClock, 1000);
+</script>
+</body>
+</html>

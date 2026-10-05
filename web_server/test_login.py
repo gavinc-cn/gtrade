@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """测试登录 API"""
 
-import os
 import requests
 import json
 
@@ -9,8 +8,8 @@ import json
 def test_login():
     url = 'http://localhost:5000/api/login'
     data = {
-        'username': os.environ.get('WEB_USER', 'admin'),
-        'password': os.environ.get('WEB_PASSWORD', '')
+        'username': 'admin',
+        'password': 'admin'
     }
 
     print(f"测试登录 API: {url}")

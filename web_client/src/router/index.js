@@ -5,6 +5,8 @@ import TradeManager from '../views/TradeManager.vue'
 import PositionManager from '../views/PositionManager.vue'
 import PortfolioPositionManager from '../views/PortfolioPositionManager.vue'
 import BalanceManager from '../views/BalanceManager.vue'
+import SettingsManager from '../views/SettingsManager.vue'
+import ManualOrderManager from '../views/ManualOrderManager.vue'
 import LoginSimple from '../views/LoginSimple.vue'
 
 const routes = [
@@ -15,8 +17,9 @@ const routes = [
     meta: { title: '登录', requiresAuth: false }
   },
   {
+    // 默认落地页 = 手动下单（登录后 router.push('/') 即进入该页）
     path: '/',
-    redirect: '/strategy'
+    redirect: '/manual-orders'
   },
   {
     path: '/strategy',
@@ -29,6 +32,12 @@ const routes = [
     name: 'OrderManager',
     component: OrderManager,
     meta: { title: '委托管理', requiresAuth: true }
+  },
+  {
+    path: '/manual-orders',
+    name: 'ManualOrderManager',
+    component: ManualOrderManager,
+    meta: { title: '手动下单', requiresAuth: true }
   },
   {
     path: '/trades',
@@ -53,6 +62,12 @@ const routes = [
     name: 'BalanceManager',
     component: BalanceManager,
     meta: { title: '资金管理', requiresAuth: true }
+  },
+  {
+    path: '/settings',
+    name: 'Settings',
+    component: SettingsManager,
+    meta: { title: '设置', requiresAuth: true }
   }
 ]
 

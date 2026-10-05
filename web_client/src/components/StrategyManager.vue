@@ -594,8 +594,11 @@ import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { VideoPlay, VideoPause, RefreshRight, Refresh, Delete } from '@element-plus/icons-vue'
 import request from '@/utils/request'
-import gtradeRequest from '@/utils/gtradeRequest'
 import { dictService } from '@/services/dictService'
+import { subscribe, unsubscribe, isOpen } from '@/services/pushStream'
+
+// 策略表推送 topic（全表一条，无 key）；服务端增量事件按 strat_name 合并
+const PUSH_TOPIC_STRATEGIES = 'strategies'
 
 export default {
   name: 'StrategyManager',
@@ -727,6 +730,22 @@ export default {
       }
     }
 
+    /**
+     * 把后端返回的策略行统一成表格用的结构。
+     * 接口（/api/strategy/list、/api/strategies）与推送事件（strategies topic）用同一份行结构，
+     * 三条路径共用本函数，避免字段名（param/indicator vs params/indicators）各处不一致。
+     */
+    const mapStrategyRow = (strat) => ({
+      id: strat.id || strat.strat_name,
+      strat_name: strat.strat_name,
+      strat_template: strat.strat_template,
+      status: strat.status || 0,
+      params: strat.param || {},
+      indicators: strat.indicator || {},
+      create_time: strat.create_time,
+      update_time: strat.update_time
+    })
+
     // 加载所有模板的策略列表
     const loadAllTemplatesStrategies = async () => {
       loading.value = true
@@ -734,15 +753,7 @@ export default {
         await Promise.all(templates.value.map(async (template) => {
           const response = await request.get(`${API_BASE}/strategy/list/${template}`)
           const strategiesList = response.data.strategies || []
-          strategies.value[template] = strategiesList.map(strat => ({
-            id: strat.id || strat.strat_name,
-            strat_name: strat.strat_name,
-            status: strat.status || 0,
-            params: strat.param || {},
-            indicators: strat.indicator || {},
-            create_time: strat.create_time,
-            update_time: strat.update_time
-          }))
+          strategies.value[template] = strategiesList.map(mapStrategyRow)
         }))
       } catch (error) {
         ElMessage.error('加载策略列表失败: ' + error.message)
@@ -767,32 +778,68 @@ export default {
 
       if (!silent) loading.value = true
       try {
-        console.log('开始从服务器加载策略列表...')
         const response = await request.get(`${API_BASE}/strategy/list/${activeTab.value}`)
 
         // 解析策略数据
         const strategiesList = response.data.strategies || []
 
         // 解析实际的param和indicator数据
-        strategies.value[activeTab.value] = strategiesList.map(strat => {
-          console.log(`加载策略 ${strat.strat_name}，服务器返回状态: ${strat.status}`)
-          return {
-            id: strat.id || strat.strat_name,
-            strat_name: strat.strat_name,
-            status: strat.status || 0,
-            params: strat.param || {},  // 使用后端返回的param
-            indicators: strat.indicator || {},  // 使用后端返回的indicator
-            create_time: strat.create_time,
-            update_time: strat.update_time
-          }
-        })
-        console.log('策略列表加载完成')
+        strategies.value[activeTab.value] = strategiesList.map(mapStrategyRow)
         syncSelectedStrategyForDetails()
       } catch (error) {
         ElMessage.error('加载策略列表失败: ' + error.message)
       } finally {
         if (!silent) loading.value = false
       }
+    }
+
+    // ── 策略表推送（SSE `strategies` topic） ────────────────────────────────
+    // 语义：订阅时/每 60s 一帧 full（全量替换各模板桶），其余为增量（按 strat_name 合并、
+    // removed 删除）。增量绝不丢帧（服务端队列满会断流，重连后重新收全量）。
+    /** 全量替换：按 strat_template 重建桶，保持已有模板的展示顺序 */
+    const replaceAllStrategies = (rows) => {
+      const next = {}
+      templates.value.forEach(t => { next[t] = [] })
+      rows.forEach(row => {
+        const tpl = row.strat_template
+        if (!tpl) return
+        if (!next[tpl]) next[tpl] = []
+        next[tpl].push(mapStrategyRow(row))
+      })
+      strategies.value = next
+    }
+
+    /** 增量合并：逐行 upsert（按 strat_name 定位），removed 从所有桶里删除 */
+    const mergeStrategies = (rows, removed) => {
+      const next = { ...strategies.value }
+      rows.forEach(row => {
+        const tpl = row.strat_template
+        if (!tpl) return
+        const item = mapStrategyRow(row)
+        const list = [...(next[tpl] || [])]
+        const idx = list.findIndex(s => s.strat_name === item.strat_name)
+        if (idx >= 0) list[idx] = item
+        else list.push(item)
+        next[tpl] = list
+      })
+      if (removed && removed.length) {
+        const gone = new Set(removed)
+        Object.keys(next).forEach(tpl => {
+          next[tpl] = (next[tpl] || []).filter(s => !gone.has(s.strat_name))
+        })
+      }
+      strategies.value = next
+    }
+
+    /** 推送事件入口（event='strategies' 数据帧，'upstream_error' 上游失败） */
+    const handleStrategiesEvent = (payload, event) => {
+      if (event === 'upstream_error') {
+        console.warn('[push] 策略表上游失败:', payload && (payload.message || payload.code))
+        return
+      }
+      if (payload.full) replaceAllStrategies(payload.changed || [])
+      else mergeStrategies(payload.changed || [], payload.removed || [])
+      syncSelectedStrategyForDetails()
     }
 
     // 标签切换
@@ -812,8 +859,8 @@ export default {
     // 启动策略
     const startStrategy = async (strategyId) => {
       try {
-        // 直接调用 gtrade HTTP gateway，而不是通过 web_server
-        const response = await gtradeRequest.post(`/api/strategy/start/${strategyId}`)
+        // 经 web_server 转发到 gtrade HTTP gateway
+        const response = await request.post(`/api/strategy/start/${strategyId}`)
         if (response.data.success) {
           ElMessage.success('启动成功')
 
@@ -848,15 +895,15 @@ export default {
           ElMessage.error('启动失败: ' + (response.data.error || '未知错误'))
         }
       } catch (error) {
-        ElMessage.error('启动失败: ' + error.message)
+        ElMessage.error('启动失败: ' + (error.response?.data?.error || error.response?.data?.message || error.message))
       }
     }
 
     // 停止策略
     const stopStrategy = async (strategyId) => {
       try {
-        // 直接调用 gtrade HTTP gateway，而不是通过 web_server
-        const response = await gtradeRequest.post(`/api/strategy/stop/${strategyId}`)
+        // 经 web_server 转发到 gtrade HTTP gateway
+        const response = await request.post(`/api/strategy/stop/${strategyId}`)
         if (response.data.success) {
           ElMessage.success('停止成功')
 
@@ -892,15 +939,15 @@ export default {
           ElMessage.error('停止失败: ' + (response.data.error || '未知错误'))
         }
       } catch (error) {
-        ElMessage.error('停止失败: ' + error.message)
+        ElMessage.error('停止失败: ' + (error.response?.data?.error || error.response?.data?.message || error.message))
       }
     }
 
     // 重启策略
     const restartStrategy = async (strategyId) => {
       try {
-        // 直接调用 gtrade HTTP gateway，而不是通过 web_server
-        const response = await gtradeRequest.post(`/api/strategy/restart/${strategyId}`)
+        // 经 web_server 转发到 gtrade HTTP gateway
+        const response = await request.post(`/api/strategy/restart/${strategyId}`)
         if (response.data.success) {
           ElMessage.success('重启成功')
 
@@ -935,7 +982,7 @@ export default {
           ElMessage.error('重启失败: ' + (response.data.error || '未知错误'))
         }
       } catch (error) {
-        ElMessage.error('重启失败: ' + error.message)
+        ElMessage.error('重启失败: ' + (error.response?.data?.error || error.response?.data?.message || error.message))
       }
     }
 
@@ -955,7 +1002,7 @@ export default {
         )
 
         // 调用 gtrade HTTP gateway 删除策略
-        const response = await gtradeRequest.delete(`/api/strategy/delete/${strategyId}`)
+        const response = await request.delete(`/api/strategy/delete/${strategyId}`)
         if (response.data.success) {
           ElMessage.success('删除成功')
 
@@ -966,7 +1013,7 @@ export default {
         }
       } catch (error) {
         if (error !== 'cancel') {
-          ElMessage.error('删除失败: ' + error.message)
+          ElMessage.error('删除失败: ' + (error.response?.data?.error || error.response?.data?.message || error.message))
         }
       }
     }
@@ -996,8 +1043,8 @@ export default {
         )
 
         loading.value = true
-        // 直接调用 gtrade HTTP gateway，而不是通过 web_server
-        const response = await gtradeRequest.post(`/api/strategy/batch`, {
+        // 经 web_server 转发到 gtrade HTTP gateway
+        const response = await request.post(`/api/strategy/batch`, {
           operation,
           strategy_ids: selectedStrategies.value
         })
@@ -1011,7 +1058,7 @@ export default {
         }
       } catch (error) {
         if (error !== 'cancel') {
-          ElMessage.error(`批量${operationText}失败: ` + error.message)
+          ElMessage.error(`批量${operationText}失败: ` + (error.response?.data?.error || error.response?.data?.message || error.message))
         }
       } finally {
         loading.value = false
@@ -1044,7 +1091,7 @@ export default {
         // 逐个删除策略
         for (const strategyId of selectedStrategies.value) {
           try {
-            const response = await gtradeRequest.delete(`/api/strategy/delete/${strategyId}`)
+            const response = await request.delete(`/api/strategy/delete/${strategyId}`)
             if (response.data.success) {
               successCount++
             } else {
@@ -1067,7 +1114,7 @@ export default {
         await loadStrategies()
       } catch (error) {
         if (error !== 'cancel') {
-          ElMessage.error('批量删除失败: ' + error.message)
+          ElMessage.error('批量删除失败: ' + (error.response?.data?.error || error.response?.data?.message || error.message))
         }
       } finally {
         loading.value = false
@@ -1462,9 +1509,10 @@ export default {
         refreshTimer.value = null
       }
 
-      // 设置新定时器
+      // 设置新定时器（降级用：推送正常时由 SSE 增量推送更新，这里直接跳过，避免多余请求）
       if (interval > 0) {
         refreshTimer.value = setInterval(() => {
+          if (isOpen()) return
           loadStrategies(true)  // 静默刷新，不显示 loading 遮罩
         }, interval * 1000)
       }
@@ -1708,6 +1756,9 @@ export default {
       loadTemplates()
       dictService.load().then(() => { dictLoaded.value = true }).catch(() => { dictLoaded.value = true })
 
+      // 策略表推送：订阅后服务端立即回一帧全量，之后按行增量推送（refreshInterval 降级为兜底轮询）
+      subscribe(PUSH_TOPIC_STRATEGIES, handleStrategiesEvent)
+
       // 从 localStorage 恢复刷新间隔，默认10秒
       const savedInterval = localStorage.getItem('strategyRefreshInterval')
       if (savedInterval !== null) {
@@ -1936,6 +1987,9 @@ export default {
       if (window._filterButtonInterval) {
         clearInterval(window._filterButtonInterval)
       }
+
+      // 退订策略表推送（引用计数归零后服务端停止查库；SSE 连接由单例保留，其他页面不受影响）
+      unsubscribe(PUSH_TOPIC_STRATEGIES, handleStrategiesEvent)
     })
 
     return {

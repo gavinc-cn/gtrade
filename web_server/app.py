@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from urllib.parse import quote
 import logging
 import os
 import yaml
@@ -8,6 +9,9 @@ import setproctitle
 from config import config
 from database import get_db_manager
 from strategy_service import get_strategy_service
+import settings_service
+import gtrade_client
+import push_stream
 from reconciliation_service import get_reconciliation_service
 from auth import token_required, authenticate, generate_token
 
@@ -74,6 +78,14 @@ try:
     logger.info("autoresearch blueprint registered at /research")
 except Exception as _e:
     logger.warning(f"autoresearch blueprint not loaded: {_e}")
+
+# 注册 SSE 推送通道（/api/stream*、/api/settings/push）并启动推送中枢采样线程
+# 契约见 doc_ai/plan/202610/20261003_1610_web行情推送改造方案.md §2
+try:
+    push_stream.register(app)
+except Exception as _e:
+    # 推送通道起不来不能让整个 Web 服务挂掉：前端会自动回落轮询（方案 §6 回滚路径）
+    logger.error(f"推送通道注册失败，前端将回落轮询: {_e}")
 
 
 def _get_strategy_param_dir():
@@ -145,6 +157,23 @@ def shutdown_reconciliation():
     reconciliation_service.stop()
 
 atexit.register(shutdown_reconciliation)
+
+
+def shutdown_push_channels():
+    """关闭推送通道：先停引擎侧 WS 入口（断开引擎连接），再停 hub 采样线程。"""
+    try:
+        from ws_engine import get_engine_link
+        get_engine_link().stop()
+    except Exception as _e:
+        logger.warning(f"停止引擎侧推送入口失败: {_e}")
+    try:
+        from push_hub import get_hub
+        get_hub().stop()
+    except Exception as _e:
+        logger.warning(f"停止推送中枢失败: {_e}")
+
+
+atexit.register(shutdown_push_channels)
 
 @app.route('/api/login', methods=['POST'])
 def login():
@@ -314,80 +343,98 @@ def get_strategy_list_by_template(template):
         logger.error(f"获取策略列表失败: {e}")
         return jsonify({'success': False, 'message': '获取策略列表失败'}), 500
 
+def _proxy_to_engine(method, path, *, with_body=False, with_query=False, body=None, str_fields=()):
+    """把当前请求转发到 gtrade HttpGateway（:46012），响应体与状态码原样透传。
+
+    仅供显式白名单路由调用（path 由各路由写死），不构成任意透传代理；
+    引擎不可达时统一返回 502 {"success": false, "message": "引擎不可达: ..."}。
+
+    :param with_body: 取当前请求的 JSON 体转发（传了 body 时忽略）
+    :param body: 显式指定转发的 JSON 体；路由层需要先做字段归一化时使用（如 entno 字符串转精确整数）
+    :param str_fields: 响应体中要转成字符串的字段。本地委托号等 19 位大整数（> 2^53）在 JS 端
+                       按 number 解析会被 double 静默舍入，统一按字符串回给浏览器
+    """
+    json_body = body
+    if json_body is None and with_body:
+        json_body = request.get_json(silent=True)
+    try:
+        resp_body, status = gtrade_client.forward(
+            method,
+            path,
+            json_body=json_body,
+            params=request.args.to_dict() if with_query else None,
+        )
+    except gtrade_client.EngineUnavailable as e:
+        return jsonify({'success': False, 'message': str(e)}), 502
+    if str_fields and isinstance(resp_body, dict):
+        for field in str_fields:
+            if resp_body.get(field) is not None:
+                resp_body[field] = str(resp_body[field])
+    return jsonify(resp_body), status
+
+# ── 策略操作 / 交易：转发 gtrade HttpGateway（引擎为真源，web_server 不改本地状态） ──
+
 @app.route('/api/strategy/start/<strategy_id>', methods=['POST'])
 @token_required
 def start_strategy(strategy_id):
-    """启动策略"""
-    try:
-        # TODO: 调用C++后端的HTTP接口来启动策略
-        # 暂时只更新数据库状态
-        strategy_service.update_strategy(int(strategy_id), {'status': 1})
-        return jsonify({'success': True, 'message': '策略启动成功'})
-    except Exception as e:
-        logger.error(f"启动策略失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+    """启动策略（转发 gtrade HttpGateway）"""
+    return _proxy_to_engine('POST', f'/api/strategy/start/{quote(strategy_id, safe="")}')
 
 @app.route('/api/strategy/stop/<strategy_id>', methods=['POST'])
 @token_required
 def stop_strategy(strategy_id):
-    """停止策略"""
-    try:
-        # TODO: 调用C++后端的HTTP接口来停止策略
-        # 暂时只更新数据库状态
-        strategy_service.update_strategy(int(strategy_id), {'status': 0})
-        return jsonify({'success': True, 'message': '策略停止成功'})
-    except Exception as e:
-        logger.error(f"停止策略失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+    """停止策略（转发 gtrade HttpGateway）"""
+    return _proxy_to_engine('POST', f'/api/strategy/stop/{quote(strategy_id, safe="")}')
 
 @app.route('/api/strategy/restart/<strategy_id>', methods=['POST'])
 @token_required
 def restart_strategy(strategy_id):
-    """重启策略"""
-    try:
-        # TODO: 调用C++后端的HTTP接口来重启策略
-        # 暂时先停止再启动
-        strategy_service.update_strategy(int(strategy_id), {'status': 0})
-        strategy_service.update_strategy(int(strategy_id), {'status': 1})
-        return jsonify({'success': True, 'message': '策略重启成功'})
-    except Exception as e:
-        logger.error(f"重启策略失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+    """重启策略（转发 gtrade HttpGateway）"""
+    return _proxy_to_engine('POST', f'/api/strategy/restart/{quote(strategy_id, safe="")}')
+
+@app.route('/api/strategy/delete/<strategy_id>', methods=['DELETE'])
+@token_required
+def delete_strategy_from_engine(strategy_id):
+    """删除策略（转发 gtrade HttpGateway；区别于 /api/strategies/<id> 的 DB 删除）"""
+    return _proxy_to_engine('DELETE', f'/api/strategy/delete/{quote(strategy_id, safe="")}')
 
 @app.route('/api/strategy/batch', methods=['POST'])
 @token_required
 def batch_strategy_operation():
-    """批量操作策略"""
-    try:
-        data = request.get_json()
-        operation = data.get('operation')
-        strategy_ids = data.get('strategy_ids', [])
+    """批量操作策略（转发 gtrade HttpGateway，响应含逐条结果）"""
+    return _proxy_to_engine('POST', '/api/strategy/batch', with_body=True)
 
-        if not operation or not strategy_ids:
-            return jsonify({'success': False, 'error': '参数不完整'}), 400
+@app.route('/api/trade/place_order', methods=['POST'])
+@token_required
+def place_order():
+    """手动下单（转发 gtrade HttpGateway；未编译 GTRADE_ENABLE_HTTP_TRADE 时网关 404 原样透传）
 
-        success_count = 0
-        fail_count = 0
+    响应中的 order_id 是 19 位本地委托号（> 2^53），统一转成字符串回给浏览器——JS 按 number
+    解析会静默丢精度，再用它撤单就会查不到委托（str_fields 处理）。
+    """
+    return _proxy_to_engine('POST', '/api/trade/place_order', with_body=True, str_fields=('order_id',))
 
-        status_map = {'start': 1, 'stop': 0, 'restart': 1}
-        status = status_map.get(operation)
+@app.route('/api/trade/cancel_order', methods=['POST'])
+@token_required
+def cancel_order():
+    """手动撤单（转发 gtrade HttpGateway）
 
-        for strategy_id in strategy_ids:
-            try:
-                strategy_service.update_strategy(int(strategy_id), {'status': status})
-                success_count += 1
-            except Exception as e:
-                logger.error(f"批量操作策略失败 ID:{strategy_id}, {e}")
-                fail_count += 1
+    归一化：entno 是 19 位大整数（> 2^53），浏览器无法用 JSON number 精确表达，前端按字符串传；
+    这里把十进制字符串转成 Python int 再转发——json 序列化输出精确十进制数字（不经过 float），
+    网关 HandleCancelOrder 的 IsInt64() 可直接解析。非数字串原样透传，由网关回 400。
+    """
+    body = request.get_json(silent=True)
+    if isinstance(body, dict) and isinstance(body.get('order_id'), str):
+        raw = body['order_id'].strip()
+        if raw.isdigit():
+            body['order_id'] = int(raw)
+    return _proxy_to_engine('POST', '/api/trade/cancel_order', body=body)
 
-        return jsonify({
-            'success': True,
-            'success_count': success_count,
-            'fail_count': fail_count
-        })
-    except Exception as e:
-        logger.error(f"批量操作失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+@app.route('/api/trade/depth', methods=['GET'])
+@token_required
+def get_trade_depth():
+    """最新盘口快照（转发 gtrade HttpGateway，只读）"""
+    return _proxy_to_engine('GET', '/api/trade/depth', with_query=True)
 
 @app.route('/api/orders', methods=['GET'])
 @token_required
@@ -740,6 +787,36 @@ def create_strategies_from_configs():
 def health_check():
     """健康检查接口"""
     return jsonify({'status': 'ok', 'message': 'GTRADE API服务运行正常'})
+
+@app.route('/api/settings/instrument_scope', methods=['GET'])
+@token_required
+def get_settings_instrument_scope():
+    """获取标的范围设置（全量标的 + 当前范围 + 订阅现状）"""
+    try:
+        data = settings_service.get_instrument_scope()
+        return jsonify({'success': True, 'data': data})
+    except RuntimeError as e:
+        return jsonify({'success': False, 'message': str(e)}), 502
+    except Exception as e:
+        logger.error(f"获取标的范围失败: {e}")
+        return jsonify({'success': False, 'message': '获取标的范围失败'}), 500
+
+@app.route('/api/settings/instrument_scope', methods=['POST'])
+@token_required
+def update_settings_instrument_scope():
+    """保存标的范围（引擎不可达时直接报失败，不落任何配置）"""
+    try:
+        data = request.get_json() or {}
+        scope = data.get('scope')
+        if not isinstance(scope, list):
+            return jsonify({'success': False, 'message': 'scope 必须为数组'}), 400
+        result, status = settings_service.set_instrument_scope(scope)
+        return jsonify(result), status
+    except RuntimeError as e:
+        return jsonify({'success': False, 'message': str(e)}), 502
+    except Exception as e:
+        logger.error(f"保存标的范围失败: {e}")
+        return jsonify({'success': False, 'message': '保存标的范围失败'}), 500
 
 if __name__ == '__main__':
     logger.info(f"GTrade Web Server starting with PID {os.getpid()}, process name: gtrade_websrv")

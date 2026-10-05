@@ -9,7 +9,7 @@ DB_CONFIG = {
     'host': os.environ.get('DB_HOST', 'localhost'),
     'port': int(os.environ.get('DB_PORT', 3307)),
     'user': os.environ.get('DB_USER', 'gtrade'),
-    'password': os.environ.get('DB_PASSWORD', ''),
+    'password': os.environ.get('DB_PASSWORD', 'gtrade123'),
     'database': 'gtrade',
     'charset': 'utf8mb4'
 }

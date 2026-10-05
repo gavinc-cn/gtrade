@@ -2,15 +2,6 @@
 
 本指南说明如何让 web_client 从数据库查询并显示策略信息。
 
-## 前置准备
-
-所有密码和密钥已从代码中移除，统一使用环境变量管理。请先创建 `.env` 文件：
-
-```bash
-cp .env.example .env
-# 编辑 .env 文件，填写真实的数据库密码和密钥
-```
-
 ## 问题说明
 
 Web Client 当前无法显示策略信息，因为：
@@ -41,7 +32,7 @@ docker-compose -f docker-compose.app.yml logs -f mysql
 
 ```bash
 # 执行SQL初始化脚本
-docker exec -i gtrade_mysql mysql -ugtrade -p$DB_PASSWORD gtrade < deploy/sql/strat_info.sql
+docker exec -i gtrade_mysql mysql -ugtrade -pgtrade123 gtrade < deploy/sql/strat_info.sql
 ```
 
 #### 步骤 3: 插入示例数据
@@ -117,7 +108,7 @@ sudo systemctl start mysql
 ```bash
 sudo mysql -u root << 'EOF'
 CREATE DATABASE gtrade;
-CREATE USER 'gtrade'@'localhost' IDENTIFIED BY '$DB_PASSWORD';
+CREATE USER 'gtrade'@'localhost' IDENTIFIED BY 'gtrade123';
 GRANT ALL PRIVILEGES ON gtrade.* TO 'gtrade'@'localhost';
 FLUSH PRIVILEGES;
 EOF
@@ -127,7 +118,7 @@ EOF
 
 ```bash
 cd /opt/gtrade
-mysql -ugtrade -p$DB_PASSWORD gtrade < deploy/sql/strat_info.sql
+mysql -ugtrade -pgtrade123 gtrade < deploy/sql/strat_info.sql
 ```
 
 #### 步骤 4: 修改 Web 服务器配置
@@ -215,9 +206,9 @@ docker ps | grep gtrade_mysql
 sudo systemctl status mysql
 
 # 测试连接
-mysql -h localhost -P 3307 -ugtrade -p$DB_PASSWORD gtrade  # Docker
+mysql -h localhost -P 3307 -ugtrade -pgtrade123 gtrade  # Docker
 # 或
-mysql -h localhost -ugtrade -p$DB_PASSWORD gtrade  # 本地MySQL
+mysql -h localhost -ugtrade -pgtrade123 gtrade  # 本地MySQL
 ```
 
 ### 3. 表格显示空白
@@ -230,7 +221,7 @@ mysql -h localhost -ugtrade -p$DB_PASSWORD gtrade  # 本地MySQL
 检查步骤：
 ```bash
 # 1. 检查数据库中是否有数据
-mysql -h localhost -P 3307 -ugtrade -p$DB_PASSWORD gtrade \
+mysql -h localhost -P 3307 -ugtrade -pgtrade123 gtrade \
   -e "SELECT * FROM strat_info;"
 
 # 2. 检查API返回
