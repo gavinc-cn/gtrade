@@ -38,6 +38,11 @@ add_subdirectory(integration)
 
 # 手动 e2e 程序（联网/demo 性质），默认不构建
 option(GTRADE_BUILD_E2E "Build manual e2e test programs under test/e2e/" OFF)
+# e2e 目录含本地专有环境信息，只在私有仓维护；无此目录的检出（如发布版）给提示后跳过
 if (GTRADE_BUILD_E2E)
-    add_subdirectory(e2e)
+    if (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/e2e/CMakeLists.txt)
+        add_subdirectory(e2e)
+    else ()
+        message(STATUS "GTRADE_BUILD_E2E=ON，但 test/e2e/ 不存在，已跳过")
+    endif ()
 endif ()

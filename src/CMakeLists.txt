@@ -111,7 +111,9 @@ add_subdirectory(interface)
 add_subdirectory(common)
 add_subdirectory(desktop_gateway)
 
-if (GTRADE_ENABLE_CLIENT_TEST)
+# 客户端集成测试目录仅本地保留（未纳入版本管理），无该目录的检出（如发布版）跳过即可，
+# 否则 GTRADE_ENABLE_TEST_CODE（会连带打开 GTRADE_ENABLE_CLIENT_TEST）配置阶段直接报错
+if (GTRADE_ENABLE_CLIENT_TEST AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/clients/test/CMakeLists.txt)
     add_subdirectory(clients/test)
 endif ()
 

@@ -109,8 +109,13 @@ add_subdirectory(src)
 # 独立最小低延时交易系统（单线程，无网络），按需开启
 # cmake .. -DGTRADE_BUILD_LATENCY_BENCH=ON
 option(GTRADE_BUILD_LATENCY_BENCH "Build standalone low-latency trading bench (single-thread, no network)" OFF)
+# 该模块含本机网卡/环境信息，只在私有仓维护；无此目录的检出（如发布版）给提示后跳过
 if(GTRADE_BUILD_LATENCY_BENCH)
-    add_subdirectory(src/latency_bench)
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/src/latency_bench/CMakeLists.txt)
+        add_subdirectory(src/latency_bench)
+    else()
+        message(STATUS "GTRADE_BUILD_LATENCY_BENCH=ON，但 src/latency_bench/ 不存在，已跳过")
+    endif()
 endif()
 
 #add_subdirectory(strategy_plugin)
