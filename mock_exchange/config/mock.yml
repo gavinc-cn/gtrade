@@ -1,0 +1,49 @@
+# mock_exchange 配置：本地假 OKX 交易所
+# ---------------------------------------------------------------------------
+# 1. 缺任何键都回落到 mockex/config.py 内的默认值（默认值见设计文档《模拟交易所》「配置项」表）；
+#    只有本文件不存在才报错。
+# 2. 合约清单已移到 data/okx_instruments.csv（见文件末尾 instruments_csv），本文件不再内联
+#    instruments[]。CSV 沿用 OKX 字段名（instId/instIdCode/tickSz…），因为它就是
+#    `GET /api/v5/account/instruments` 的应答内容 —— 引擎 OkexClient 逐个 GetString/GetInt64
+#    读这 16 个键，一个都不能少、类型也不能变（instIdCode 必须是 JSON number）。
+# 3. 下面的凭据是占位值，不是真实密钥；管理面只绑 127.0.0.1，不会外泄。
+# ---------------------------------------------------------------------------
+
+server:
+  rest_port: 18080        # OKX 协议面 REST
+  ws_port: 18443          # OKX 协议面 WS（public/private 同端口不同路径），必须 TLS
+  admin_port: 18081       # 管理面（仅 127.0.0.1）
+
+tls:
+  cert_dir: certs         # 自签证书目录：缺失时首次启动自动生成（生成物，不入库）
+
+fill_mode: orderbook      # orderbook：引擎委托进订单簿严格撮合（吃对手价内挂单、部分成交、余量挂单，改簿即推 bbo）；
+                          # immediate：立即全量成交、不进订单簿、不影响盘口（"单必成"，测策略逻辑用）
+
+injection:
+  default_sz: 1.0         # /admin/depth 注入时未给量的默认挂单量
+
+quotes:
+  throttle_ms: 0          # bbo 推送节流，0 = 每次盘口变化都推
+
+feed:
+  source: none            # none：纯订单驱动（无外部行情）；synthetic：合成行情（后续阶段）
+
+accounts:
+  - api_key: mock-okx-key
+    secret: mock-okx-secret
+    passphrase: mock-okx-pass
+    balances:             # 初始余额，ccy → 数量
+      USDT: 1000000
+      BTC: 100
+
+instruments_csv: data/okx_instruments.csv   # 合约清单（CSV 便于人工查看/diff）：
+                          #   相对 mock.yml 所在目录；内容由 scripts/fetch_okx_instruments.py
+                          #   从 OKX 官方 GET /api/v5/public/instruments 抓取（2026-10-03：
+                          #   SPOT 1143 / SWAP 500 / FUTURES 257，共 1900 条）。
+                          #   不含 MARGIN：币币杠杆复用 SPOT 的 instId，本系统不做杠杆；
+                          #   不含 OPTION：官方单次查询有 500 条上限，需要时再抓。
+                          #   同一份清单同时喂 OkxRest（instruments 应答）与 AccountManager
+                          #   （结算要 base/quote 币种），缺一不可。
+                          #   临时覆盖：在本文件写 instruments[] 段（OKX 字段名，16 个键）即可，
+                          #   写了就不再读 CSV（单测用）。

@@ -1,0 +1,7 @@
+# mock_exchange 运行时依赖（Python 3.12；除以下两项外只用标准库）
+# 自签证书直接调 openssl 命令行生成，不引任何 Python 加密库
+pyyaml>=6.0
+aiohttp>=3.14
+
+# 测试依赖（不属于运行时）：pytest 环境已装；pytest-asyncio 当前环境**未**安装，
+# 后续异步测试要用时再由那时决定装不装。
