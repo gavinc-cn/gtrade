@@ -50,7 +50,7 @@ subjectAltName = @alt_names
 DNS.1 = localhost
 DNS.2 = *.localhost
 IP.1 = 127.0.0.1
-IP.2 = 127.0.0.1
+IP.2 = 172.31.176.1
 IP.3 = 0.0.0.0
 EOF
 
@@ -61,7 +61,7 @@ openssl req -new -key server.key -out server.csr -config server_san.cnf
 openssl x509 -req -days $DAYS -in server.csr -CA ca.crt -CAkey ca.key \
     -CAcreateserial -out server.crt -extensions v3_req -extfile server_san.cnf
 
-echo "✅ Server certificate generated (with SAN for localhost, 127.0.0.1)"
+echo "✅ Server certificate generated (with SAN for localhost, 127.0.0.1, 172.31.176.1)"
 
 echo ""
 echo "💻 Step 3: Generating client certificate..."
