@@ -54,6 +54,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unused-variable")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unused-but-set-variable")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unused-parameter")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unused-function")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unused-result")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-comment")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-c++20-compat")
 
@@ -74,16 +75,58 @@ message(CMAKE_CXX_FLAGS=${CMAKE_CXX_FLAGS})
 
 if (GTRADE_ENABLE_TEST_CODE)
     add_compile_definitions(GTRADE_ENABLE_TEST_CODE)
+    set(GTRADE_ENABLE_CLIENT_TEST ON)
     add_compile_definitions(GTRADE_ENABLE_CLIENT_TEST)
 endif ()
 if (GTRADE_ENABLE_LATENCY_TEST)
     add_compile_definitions(GTRADE_ENABLE_LATENCY_TEST)
 endif ()
+# MCP HTTP 交易接口（place_order/cancel_order，见 src/http_server/http_gateway.cpp），
+# 默认 OFF；开启后引擎开放 :46012 /api/trade/* 下单/撤单路由
+option(GTRADE_ENABLE_HTTP_TRADE "Enable MCP HTTP trade endpoints (place/cancel order via :46012)" OFF)
+if (GTRADE_ENABLE_HTTP_TRADE)
+    add_compile_definitions(GTRADE_ENABLE_HTTP_TRADE)
+endif ()
+
+# 主线 wire2wire 延时探测（详见 doc_ai/20260629_1401_主线wire2wire延时探测_DPDK整合方案.md）
+# 两个宏相互正交，均默认 OFF（OFF 时主线行为完全不变）：
+#   GTRADE_ENABLE_DPDK_PROBE     —— 启用 src/latency_probe/ 的 DPDK 行情/交易模块，
+#                                    平级替换 OkxWs/OkxTrade 的 NIC 边界（需系统已装 DPDK）。
+#   GTRADE_LATENCY_SINGLE_THREAD —— 方案C：核心链路（Engine+策略+DpdkTradeSink）全绑 SyncThread，
+#                                    0 跨线程 0 队列往返，整条链在 DPDK busy-poll 核同步串行。
+option(GTRADE_ENABLE_DPDK_PROBE "Enable DPDK wire2wire latency probe (replace OkxWs/OkxTrade NIC boundary)" OFF)
+option(GTRADE_LATENCY_SINGLE_THREAD "Plan C: single-thread core link for latency probe (Engine+strategy+sink on SyncThread)" OFF)
+if (GTRADE_ENABLE_DPDK_PROBE)
+    add_compile_definitions(GTRADE_ENABLE_DPDK_PROBE)
+endif ()
+if (GTRADE_LATENCY_SINGLE_THREAD)
+    add_compile_definitions(GTRADE_LATENCY_SINGLE_THREAD)
+endif ()
 
 set(GTRADE_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 add_subdirectory(src)
+
+# 独立最小低延时交易系统（单线程，无网络），按需开启
+# cmake .. -DGTRADE_BUILD_LATENCY_BENCH=ON
+option(GTRADE_BUILD_LATENCY_BENCH "Build standalone low-latency trading bench (single-thread, no network)" OFF)
+if(GTRADE_BUILD_LATENCY_BENCH)
+    add_subdirectory(src/latency_bench)
+endif()
+
 #add_subdirectory(strategy_plugin)
-add_subdirectory(test)
+
+# 测试构建开关：Debug 默认 ON；其余（含未设 build type 的 -O3 构建）默认 OFF
+if (CMAKE_BUILD_TYPE MATCHES "Debug")
+    set(GTRADE_BUILD_TESTING_DEFAULT ON)
+else ()
+    set(GTRADE_BUILD_TESTING_DEFAULT OFF)
+endif ()
+option(GTRADE_BUILD_TESTING "Build unit/integration tests under test/" ${GTRADE_BUILD_TESTING_DEFAULT})
+
+if (GTRADE_BUILD_TESTING)
+    enable_testing()    # 必须在顶层调用，否则构建根目录下 ctest 发现不了用例
+    add_subdirectory(test)
+endif ()
 
 #set(PERMISION_755
 #        OWNER_READ OWNER_WRITE OWNER_EXECUTE
