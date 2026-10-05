@@ -21,6 +21,9 @@ DECLARE_K(MySqlGateway);
 DECLARE_K(OkxQuote);
 DECLARE_K(OkxDummyQuote);
 DECLARE_K(OkxTrade);
+DECLARE_K(DpdkQuote);     // DPDK 行情探测服务 (ServiceMap key, GTRADE_ENABLE_DPDK_PROBE)
+DECLARE_K(CtpQuote);     // CTP 行情服务 (ServiceMap key)
+DECLARE_K(CtpTrader);    // CTP 交易网关 (用于日志/标识, 实际按 account_id 存于 m_trade_gw_map)
 DECLARE_K(CsvQuote);
 DECLARE_K(DummyTrade);
 DECLARE_K(TimerManager);
@@ -58,6 +61,8 @@ DECLARE_K(depth1);
 // 交易所
 DECLARE_K(okx);
 DECLARE_K(okx_dummy);
+DECLARE_K(ctp);             // CTP 期货 market 标识
+DECLARE_K(dpdk_bench);      // DPDK 延时探测 market 标识 (触发 DpdkTradeSink 出口)
 DECLARE_K(huobi);
 DECLARE_K(binance);
 
@@ -116,12 +121,17 @@ DECLARE_K(cancel_wait_ms);
 DECLARE_K(max_slippage);
 
 // 账户
-DECLARE_K(okx_account3);
-DECLARE_K(okx_account3_dummy);
 DECLARE_K(market);
 DECLARE_K(key);
 DECLARE_K(secret);
 DECLARE_K(passphrase);
+// CTP 账户扩展字段 (存入 Account.extra，由 gtrade.cpp 从 YAML 自动收集)
+DECLARE_K(broker_id);
+DECLARE_K(investor_id);
+DECLARE_K(td_front);     // 交易前置地址 tcp://ip:port
+DECLARE_K(md_front);     // 行情前置地址 tcp://ip:port
+DECLARE_K(auth_code);    // 认证码 (实盘需要，openctp 7x24 可空)
+DECLARE_K(app_id);       // 终端认证 AppID (实盘需要，openctp 7x24 可空)
 DECLARE_K(proxy);
 DECLARE_K(http);
 DECLARE_K(socks5);
@@ -141,6 +151,19 @@ DECLARE_K(ws_private);
 DECLARE_K(query_processor_num);
 DECLARE_K(http_server_port);
 DECLARE_K(entrust_maintain_days);
+// DPDK 延时探测配置块 (dpdk_probe)
+DECLARE_K(dpdk_probe);
+DECLARE_K(port_id);
+DECLARE_K(rx_queue);
+DECLARE_K(tx_queue);
+DECLARE_K(pin_cpu);
+DECLARE_K(eal_args);
+DECLARE_K(dst_mac);
+// 推送出口配置块 (engine_push)：引擎 → web_server
+// 注意：不能复用 web_push —— 那段是 web_server (Flask) 的推送参数，语义不同
+DECLARE_K(engine_push);
+DECLARE_K(ping_ms);
+DECLARE_K(quote_min_interval_ms);
 DECLARE_K(desktop_gateway);
 DECLARE_K(enabled);
 DECLARE_K(server_address);
@@ -157,13 +180,6 @@ DECLARE_K(zz);
 DECLARE_K(balance);
 DECLARE_K(websocket);
 DECLARE_K(multi_factor);
-DECLARE_K(okex_account3);
-DECLARE_K(okex_account4);
-DECLARE_K(huobi_account2);
-DECLARE_K(huobi_account4);
-DECLARE_K(huobi_orca001);
-DECLARE_K(binance_account1);
-DECLARE_K(binance_account2);
 
 // 标的类型
 DECLARE_K(SPOT);

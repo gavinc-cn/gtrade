@@ -130,6 +130,10 @@ enum MsgId {
     // 系统管理
     kHttpSaveSnapshot,
     kHttpGetWalStats,
+    // HTTP 交易接口（MCP）
+    kHttpPlaceOrder,
+    kHttpCancelOrder,
+    kHttpGetDepth,
     // 策略生命周期同步控制（引擎→策略线程）
     kStratStartSync,
     kStratStopSync,
@@ -145,5 +149,17 @@ enum MsgId {
     kRemoteSyncResp,          // Engine→Runner 状态同步响应，payload = 该策略全量活跃订单
     kRemoteStrategyConnected, // AcceptLoop→StrategyEngine 内部事件，不跨网络；payload = peer_id + RemoteHandshakePayload
     kRemoteChannelB,          // AcceptLoop→StrategyEngine 内部事件，非握手帧转发；payload = peer_id + msg_type + data
+    // ── 标的范围订阅（web 设置页）────────────────────────────────────────────
+    kStratUnsubscribeQuote,      // 引擎→行情服务：退订（与 SubscribeQuote 对称）
+    kHttpQueryInstruments,       // 网关→引擎：查询全量标的
+    kHttpGetInstrumentScope,     // 网关→引擎：查询标的范围与订阅现状
+    kHttpSetInstrumentScope,     // 网关→引擎：应用标的范围（订阅/退订）
+    kDbSetInstrumentScope,       // 引擎→DB：全量替换写标的范围（异步）
+    kDbQueryInstrumentScopeReq,  // 引擎→DB：启动加载标的范围（同步）
+    // ── 启动高水位（ID 号段基数）────────────────────────────────────────────
+    kDbQueryMaxIdsReq,           // 引擎→DB：查询 order/trade 的最大号，供设置号段基数（同步）
+    // ── 补查接口（web_server → 引擎，读内存权威态）──────────────────────────
+    kHttpQueryOrdersReq,         // 网关/推送端→引擎：按 entno 游标或委托号集合补查委托（同步）
+    kHttpQueryTradesReq,         // 网关/推送端→引擎：按 tdno 游标补查成交（同步）
     kEnd,
 };

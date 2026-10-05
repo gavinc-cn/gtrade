@@ -6,6 +6,7 @@
 #include <iostream>
 #include <functional>
 #include <future>
+#include <unordered_set>
 #include <csignal>
 #include <yaml-cpp/yaml.h>
 #include "type_define.h"
@@ -15,12 +16,17 @@
 #include "global.h"
 #include "zrtools/io_pool_v2/engine_pool.h"
 #include "okx_ws.h"
+#ifdef GTRADE_ENABLE_DPDK_PROBE
+#include "latency_probe/dpdk_quote_source.h"  // DPDK 行情探测源（平级 OkxWs，方案C 单线程化见 Run()）
+#endif
 #include "okx_trade.h"
+#include "ctp_md.h"   // CTP 行情服务
 #include "my_utc.h"
 #include "timer_manager.h"
 #include "backtest_engine.h"
 #include "time_machine.h"
 #include "zrtools/io_pool_v2/sync_thread.h"
+#include "zrtools/latency/latency_recorder.h"  // 延时测量门面（未启用时为空实现）
 #include "string_keys.h"
 #include "message_server.h"
 #include "mysql_gateway.h"
@@ -115,6 +121,11 @@ public:
 
         // 账户配置
         YAML::Node account_yml = YAML::LoadFile(main_yml[k_account_config].as<std::string>());
+        // 通用账户字段（已被显式解析），其余键统一收集到 Account.extra，
+        // 供各交易所专属配置使用（如 CTP 的 broker_id/td_front/md_front 等）。
+        const std::unordered_set<std::string> k_known_account_keys = {
+            k_market, k_key, k_secret, k_passphrase
+        };
         for (const auto& account : account_yml) {
             std::string account_id = account.first.as<std::string>();
             m_gtrade_cfg.account_map[account_id].market = account.second[k_market].as<std::string>();
@@ -122,6 +133,12 @@ public:
             m_gtrade_cfg.account_map[account_id].secret = account.second[k_secret].as<std::string>();
             if (account.second[k_passphrase].IsDefined()) {
                 m_gtrade_cfg.account_map[account_id].passphrase = account.second[k_passphrase].as<std::string>();
+            }
+            // 收集非通用键到 extra（CTP: broker_id/investor_id/password/td_front/md_front/auth_code/app_id）
+            for (const auto& kv : account.second) {
+                const std::string field = kv.first.as<std::string>();
+                if (k_known_account_keys.count(field)) continue;
+                m_gtrade_cfg.account_map[account_id].extra[field] = kv.second.as<std::string>();
             }
         }
         // 加载交易所URL配置
@@ -152,6 +169,38 @@ public:
             m_gtrade_cfg.desktop_gateway_server_key = main_yml[k_desktop_gateway][k_server_key].as<std::string>("");
             m_gtrade_cfg.desktop_gateway_jwt_secret = main_yml[k_desktop_gateway][k_jwt_secret].as<std::string>();
             m_gtrade_cfg.desktop_gateway_jwt_expiration = main_yml[k_desktop_gateway][k_jwt_expiration].as<int>(86400);
+        }
+
+#ifdef GTRADE_ENABLE_DPDK_PROBE
+        // DPDK 延时探测配置（可选块 dpdk_probe；缺失则全默认、enabled=false，主线行为不变）
+        if (main_yml[k_dpdk_probe].IsDefined()) {
+            const auto& dpdk = main_yml[k_dpdk_probe];
+            m_gtrade_cfg.dpdk_probe.enabled = dpdk[k_enabled].as<bool>(true);
+            m_gtrade_cfg.dpdk_probe.port_id = dpdk[k_port_id].as<int>(0);
+            m_gtrade_cfg.dpdk_probe.rx_queue = dpdk[k_rx_queue].as<int>(0);
+            m_gtrade_cfg.dpdk_probe.tx_queue = dpdk[k_tx_queue].as<int>(0);
+            m_gtrade_cfg.dpdk_probe.pin_cpu = dpdk[k_pin_cpu].as<int>(2);
+            m_gtrade_cfg.dpdk_probe.eal_args = dpdk[k_eal_args].as<std::string>("-l 2 -n 4");
+            m_gtrade_cfg.dpdk_probe.dst_mac = dpdk[k_dst_mac].as<std::string>("");
+            LOG_INFO("loaded dpdk_probe: enabled={}, port={}, pin_cpu={}, eal_args={}",
+                m_gtrade_cfg.dpdk_probe.enabled, m_gtrade_cfg.dpdk_probe.port_id,
+                m_gtrade_cfg.dpdk_probe.pin_cpu, m_gtrade_cfg.dpdk_probe.eal_args);
+        }
+#endif
+
+        // 推送出口（引擎 → web_server，方案 rev4 §5）：
+        // 缺块或 enabled=false 时不建连接（默认关闭，待 web_server 侧 WS server 就绪后再开）
+        if (main_yml[k_engine_push].IsDefined()) {
+            const auto& push = main_yml[k_engine_push];
+            m_gtrade_cfg.engine_push.enabled = push[k_enabled].as<bool>(false);
+            m_gtrade_cfg.engine_push.url = push[k_url].as<std::string>(m_gtrade_cfg.engine_push.url);
+            m_gtrade_cfg.engine_push.secret = push[k_secret].as<std::string>("");
+            m_gtrade_cfg.engine_push.ping_ms = push[k_ping_ms].as<int>(10000);
+            m_gtrade_cfg.engine_push.quote_min_interval_ms = push[k_quote_min_interval_ms].as<int>(500);
+            LOG_INFO("loaded engine_push: enabled={}, url={}, ping_ms={}",
+                m_gtrade_cfg.engine_push.enabled, m_gtrade_cfg.engine_push.url, m_gtrade_cfg.engine_push.ping_ms);
+        } else {
+            LOG_INFO("engine_push block absent, push outlet disabled");
         }
 
         // Web登录凭证
@@ -197,7 +246,15 @@ public:
 
         zrt::EnginePool& pool = zrt::EnginePool::GetInstance();
         pool.AddNamedEngine<SyncThread>(k_BackTestThread);
+#ifdef GTRADE_LATENCY_SINGLE_THREAD
+        // 方案C：核心链路单线程化——k_StrategyEngineThread 指向 SyncThread，Engine/策略/
+        // DpdkTradeSink 都绑它，整条链在 DPDK busy-poll 核同步串行（0 跨线程、0 队列往返）。
+        // 前提：Engine/策略不直接用 io_service（定时器走独立 TimerManager 服务）——
+        // 详见设计文档 §11.4 坑1。OFF 时为 BoostAsioThread，主线多线程行为完全不变。
+        pool.AddNamedEngine<SyncThread>(k_StrategyEngineThread);
+#else
         pool.AddNamedEngine<BoostAsioThread>(k_StrategyEngineThread);
+#endif
         pool.AddNamedEngine<BoostAsioThread>(k_TimerManagerThread);
         pool.AddNamedEngine<BoostAsioThread>(k_MySqlGatewayThread);
         pool.AddNamedEngine<BoostAsioThread>(k_MessageServerThread);
@@ -214,6 +271,17 @@ public:
         else {
             TimeMachine::GetInstance().SetEpoch(MyUTC(m_gtrade_cfg.start_date, BACKTEST_TIME_FORMAT).Epoch19());
         }
+
+#ifdef GTRADE_ENABLE_LATENCY_TEST
+        // 延时测量：标定时钟 + 注册指标 + 启动周期 flush 线程。
+        // 必须在线程池启动前 Init，保证 rdtsc 频率标定在单线程下完成。
+        {
+            zrt::LatencyRecorderConfig lat_cfg {};
+            lat_cfg.run_name = "gtrade";
+            zrt::LatencyRecorder::Instance().Init(lat_cfg);
+            zrt::LatencyRecorder::Instance().Start();
+        }
+#endif
 
         /*
         服务结构:
@@ -244,8 +312,31 @@ public:
 
         // 实盘
         if constexpr (GlobalConst::IsRealTrading) {
+#ifdef GTRADE_ENABLE_DPDK_PROBE
+            if (m_gtrade_cfg.dpdk_probe.enabled) {
+                // 探测模式：DpdkQuoteSource 复用 k_OkxQuote 这个 ServiceMap key 替换 OkxWs，
+                // 策略订阅路由（OnSubscribeQuote → k_OkxQuote）零改动；OFF 或 enabled=false 时用 OkxWs。
+                m_service_map.emplace(k_OkxQuote, std::make_unique<DpdkQuoteSource>(m_service_map, m_gtrade_cfg));
+            } else {
+                m_service_map.emplace(k_OkxQuote, std::make_unique<OkxWs>(m_service_map, m_gtrade_cfg, k_okx));
+            }
+#else
             m_service_map.emplace(k_OkxQuote, std::make_unique<OkxWs>(m_service_map, m_gtrade_cfg, k_okx));
+#endif
             m_service_map.emplace(k_OkxDummyQuote, std::make_unique<OkxWs>(m_service_map, m_gtrade_cfg, k_okx_dummy));
+            // CTP 行情服务：进程内唯一一条行情连接，凭证取自第一个 CTP 账户。
+            // 交易网关(CtpTrader)按账户在 StrategyEngine::EnsureTradeGateway 中按需创建。
+            {
+                std::string ctp_md_account;
+                for (const auto& [aid, acc] : m_gtrade_cfg.account_map) {
+                    if (zrt::equal(acc.market, k_ctp)) { ctp_md_account = aid; break; }
+                }
+                if (!ctp_md_account.empty()) {
+                    m_service_map.emplace(k_CtpQuote, std::make_unique<CtpMd>(m_service_map, m_gtrade_cfg, ctp_md_account));
+                } else {
+                    LOG_INFO("no account with market=ctp found, CtpMd skipped");
+                }
+            }
             m_service_map.emplace(k_TimerManager, std::make_unique<TimerManager>(m_service_map, m_gtrade_cfg));
             m_service_map.emplace(k_HttpGateway, std::make_unique<HttpGateway>(m_service_map, m_gtrade_cfg));
             if (m_gtrade_cfg.desktop_gateway_enabled) {
@@ -289,6 +380,11 @@ public:
 
         // 等待线程池中所有任务完成并停止线程
         pool.WaitStop();
+
+#ifdef GTRADE_ENABLE_LATENCY_TEST
+        // 延时测量：停止 flush 线程 + 输出整运行汇总 JSON
+        zrt::LatencyRecorder::Instance().Shutdown();
+#endif
         LOG_INFO("GTrade 已退出");
     }
 
