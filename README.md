@@ -60,7 +60,6 @@ GTrade 是一个面向专业量化交易的全栈平台，覆盖从策略研发�
 - **自然语言管理**：对话式创建、启动、停止策略
 - **AI 代码生成**：自动生成策略 C++ 代码并编译为 `.so` 插件
 - **一键回测**：AI 编写策略 → 自动编译 → 自动回测 → 输出分析报告
-- **自动研究流水线**（AutoResearch）：AI 策略生成 → 回测评估 → 晋升筛选（Sharpe/Calmar/IC）→ 人工审批 → 实盘部署
 
 ### 🔌 多客户端支持
 - **Web 控制台**（Vue 3 + Element Plus）：策略监控、参数配置、指标查看
@@ -118,7 +117,7 @@ GTrade 是一个面向专业量化交易的全栈平台，覆盖从策略研发�
 | **Web 后端** | Python 3.12, Flask, SQLAlchemy, PyJWT |
 | **Web 前端** | Vue 3.4, Element Plus 2.5, Vite 5 |
 | **桌面客户端** | Qt5, gRPC, Protobuf, Conan |
-| **AI 集成** | FastMCP, Anthropic Claude, AutoResearch Pipeline |
+| **AI 集成** | FastMCP, Anthropic Claude |
 | **部署运维** | Docker, Docker Compose, Shell Scripts |
 
 ---
@@ -156,25 +155,21 @@ ninja install
 
 ### 4. 启动服务
 
-**方式一：Docker Compose（推荐）**
-
-```bash
-docker-compose -f docker-compose.app.yml up -d
-```
-
-**方式二：手动启动**
-
 ```bash
 cd deploy
 bash start.sh   # 一键启动：gtrade + gtrade_repl + web_server + web_client + mcp_server
 ```
 
+服务由 `deploy/svc.sh` / `deploy/svc.py` 统一管理（`bash stop.sh`、`bash status.sh`、`bash restart.sh`）。
+MySQL 需自行准备（默认 `localhost:3307`，账号与库名见 `.env.example`），库表初始化脚本在 `deploy/sql/`。
+
 ### 5. 访问系统
 
 | 服务 | 地址 |
 |------|------|
-| Web 控制台 | http://localhost:5173 |
-| REST API | http://localhost:5000 |
+| Web 控制台（Vite 前端） | http://localhost:46010 |
+| Flask 后端 / REST API | http://localhost:46011 |
+| 引擎 HTTP 网关 | http://127.0.0.1:46012 |
 | MCP Server (SSE) | http://127.0.0.1:8765 |
 
 ---
@@ -183,14 +178,16 @@ bash start.sh   # 一键启动：gtrade + gtrade_repl + web_server + web_client 
 
 ### 内置策略类型
 
+开源仓只内置**一个演示策略** `StratDemo`（`src/strategy/strategy_demo.h/.cpp` + `src/strategy_param/StratDemo.yml`），
+用来演示 `StrategyBase` 接口与 `.so` 插件 ABI 的最小闭环；网格、均线、套利等业务策略不在开源仓内，
+按下方「创建自定义策略」自行实现。
+
 | 策略 | 说明 |
 |------|------|
-| `SpotGrid` | 现货网格交易 |
-| `StratSMA` | SMA 均线交叉 |
-| `FutureArbitrageV3` | 期货套利（如 BTC-USDT vs BTC-USDT-SWAP） |
-| `IndicatorKline` | K线指标记录 |
-| `StratSpotGridFull` | 高级现货网格 |
-| `StrategyRecorder` | 行情数据录制 |
+| `StratDemo` | 演示策略：订阅行情、下单/撤单、指标上报的最小示例 |
+
+插件版示例见 `strategy_plugin/`（`strategy_demo.h/.cpp` + `strategy_plugin/param/StratDemo.yml`，用
+`add_strategy_plugin()` 编成 `libstrategy_demo_{live,bt}.so`）。
 
 ### 创建自定义策略
 
@@ -267,16 +264,6 @@ GTrade 提供完整的 MCP Server，支持 AI 助手通过自然语言管理整�
 | **回测** | 运行回测、查询状态、获取结果 |
 | **代码生成** | 读取参考代码、写入策略代码、编译插件 |
 
-### AutoResearch 自动研究流水线
-
-AI 驱动的端到端策略研究：
-
-1. **策略生成**：AI 根据市场特征自动生成策略代码
-2. **自动回测**：编译 → 多参数组合并行回测
-3. **晋升评估**：自动筛选（Sharpe > 1.5, MaxDD < 15%, Calmar > 1.0）
-4. **熔断保护**：连续失败自动暂停，防止资源浪费
-5. **人工审批**：实盘部署前需人工确认
-
 ---
 
 ## 🗄 项目结构
@@ -285,9 +272,10 @@ AI 驱动的端到端策略研究：
 gtrade/
 ├── src/                    # C++ 核心引擎源码
 │   ├── strategy_engine/    # 策略引擎（加载、调度、代理）
-│   ├── strategy/           # 内置策略实现
+│   ├── strategy/           # 策略实现（开源仓仅含演示策略 StratDemo）
 │   ├── websocket/          # WebSocket 客户端（OKX）
 │   ├── clients/            # REST API 客户端
+│   ├── ctp/                # CTP 期货行情/交易适配
 │   ├── db_server/          # 数据库网关（MySQL/ClickHouse）
 │   ├── http_server/        # HTTP 管理接口
 │   ├── desktop_gateway/    # Qt 桌面端 gRPC 网关
@@ -303,14 +291,13 @@ gtrade/
 ├── web_client/             # Vue 3 前端
 ├── qt_client/              # Qt5 桌面客户端
 ├── mcp_server/             # MCP AI 集成服务
-├── autoresearch/           # AI 自动策略研究流水线
-├── strategy_plugin/        # 策略插件输出目录
-├── strategy_config/        # 策略实例配置
-├── config/                 # 系统配置
-├── deploy/                 # 部署脚本 & SQL
+├── mock_exchange/          # 本地假 OKX 交易所（离线联调/单测）
+├── strategy_plugin/        # 策略插件示例（demo 插件 + 参数模板）
+├── config/                 # 配置模板（默认层）
+├── deploy/                 # 部署脚本、各模式覆盖配置 & SQL
+├── docs/                   # 落地页设计文档
 ├── proto/                  # 协议定义
-├── test/                   # 测试
-├── tools/                  # 开发工具
+├── test/                   # 测试（unit / integration）
 └── python/                 # Python SDK（gtrade_py）
 ```
 
