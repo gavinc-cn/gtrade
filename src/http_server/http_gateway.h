@@ -33,6 +33,20 @@ private:
     // 系统管理
     void HandleSnapshot(const httplib::Request& req, httplib::Response& res);
     void HandleWalStats(const httplib::Request& req, httplib::Response& res);
+#ifdef GTRADE_ENABLE_HTTP_TRADE
+    // MCP 交易接口（仅在 GTRADE_ENABLE_HTTP_TRADE 编译时开放）
+    void HandlePlaceOrder(const httplib::Request& req, httplib::Response& res);
+    void HandleCancelOrder(const httplib::Request& req, httplib::Response& res);
+#endif  // GTRADE_ENABLE_HTTP_TRADE
+    // 行情快照（始终开放，只读无风险）
+    void HandleGetDepth(const httplib::Request& req, httplib::Response& res);
+    // 标的范围订阅（web 设置页，始终开放）
+    void HandleGetInstrumentList(const httplib::Request& req, httplib::Response& res);
+    void HandleGetInstrumentScope(const httplib::Request& req, httplib::Response& res);
+    void HandleSetInstrumentScope(const httplib::Request& req, httplib::Response& res);
+    // 补查（始终开放，只读无风险）：读引擎内存权威态
+    void HandleQueryOrders(const httplib::Request& req, httplib::Response& res);
+    void HandleQueryTrades(const httplib::Request& req, httplib::Response& res);
 
     // HTTP服务器线程函数
     void ServerThread();
