@@ -1,0 +1,29 @@
+# CTP 账户配置示例（非真实凭证）
+# ---------------------------------------------------------------------------
+# 用法：把下面 ctp_test 这一段合并进 account_config 指向的 secret.yml
+#      （默认 /etc/secret.yml，由 config/config.yml 的 account_config 指定）。
+#      gtrade.cpp 会自动把 market/key/secret/passphrase 之外的键收集到
+#      Account.extra，供 CtpMd / CtpTrader 读取。
+#
+# 连接目标二选一：
+#   - openctp 7x24（开发联调，免注册）：broker_id/auth_code/app_id 可空
+#       交易前置 tcp://121.37.80.177:20002
+#       行情前置 tcp://121.37.80.177:20004
+#   - 实盘 CTP 柜台：填写真实 broker_id，并需要 auth_code/app_id 认证
+#     （当前 TraderApi.h 未含 ReqUserAuthentication，实盘需后续补充认证流程）
+# ---------------------------------------------------------------------------
+
+ctp_test:
+  market: ctp
+  key: ""                   # OKX 专用，CTP 留空（结构体通用字段，不可省略）
+  secret: ""                # 同上
+  # passphrase: ""          # 可选
+
+  # ===== CTP 专属字段（收集到 Account.extra）=====
+  broker_id: ""             # 经纪商代码；openctp 7x24 可空，实盘必填（如 "9999"）
+  investor_id: "00000001"   # 投资者账号 = 登录 UserID（openctp 模拟号）
+  password: "123456"        # 登录密码
+  td_front: "tcp://121.37.80.177:20002"   # 交易前置地址
+  md_front: "tcp://121.37.80.177:20004"   # 行情前置地址（行情连接共享，取首个 ctp 账户）
+  auth_code: ""             # 实盘终端认证码；openctp 7x24 可空
+  app_id: ""                # 实盘终端 AppID；openctp 7x24 可空
