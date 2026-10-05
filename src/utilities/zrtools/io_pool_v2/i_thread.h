@@ -8,6 +8,7 @@
 #include <boost/assign.hpp>
 #include <boost/asio.hpp>
 #include <thread>
+#include "spdlog/spdlog.h"
 
 
 class IThread: public boost::noncopyable
