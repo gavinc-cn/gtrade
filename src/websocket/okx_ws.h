@@ -51,7 +51,9 @@ public:
     void on_reconnected_impl() override;
     // void subscribe() override;
     void Subscribe(const std::string& channel, const std::string& inst_id);
+    void Unsubscribe(const std::string& channel, const std::string& inst_id);
     void OnSubscribeQuote(int msg_id, const BufPtr buffer);
+    void OnUnsubscribeQuote(int msg_id, const BufPtr buffer);
     void on_message(websocketpp::connection_hdl, client::message_ptr msg) override;
     void OnBboTbt(int64_t entry_time, int64_t monotonic, const std::string& symbol, const rapidjson::Value& data);
 private:
@@ -59,5 +61,7 @@ private:
     const GTradeConfig m_gtrade_cfg {};
     MyHandler* m_strategy_engine;
     std::string m_exchange {};  // 交易所名称 (如 "okx", "okx_dummy")
+    // 订阅表：仅限 io 线程访问（on_open_impl 与 PostToWsThread 投递的任务），
+    // 其他线程一律通过 PostToWsThread 间接读写，不得直接访问/加锁后跨界访问
     zrt::TupleHashMap<QuoteSub> m_sub_map {};
 };

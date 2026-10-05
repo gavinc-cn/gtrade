@@ -12,11 +12,13 @@
 #include "rapidjson_helper.h"
 #include "i_client.h"
 #include "msg_id.h"
+#include "zrtools/latency/latency_tracer.h"  // 延时测试打点宏（未启用时编译为空）
 
 
 bool OkxWs::Init() {
     SPDLOG_INFO("{}", __PRETTY_FUNCTION__);
     ZRT_ADD_HANDLER(kStratSubscribeQuote, OkxWs::OnSubscribeQuote);
+    ZRT_ADD_HANDLER(kStratUnsubscribeQuote, OkxWs::OnUnsubscribeQuote);
     return true;
 }
 
@@ -76,18 +78,57 @@ void OkxWs::Subscribe(const std::string& channel, const std::string& inst_id) {
     Send(buffer.GetString());
 }
 
+// 订阅/退订：先把 QuoteSub 从 buffer 按值拷出，再投递到 io 线程执行，
+// 与 on_open_impl 的遍历互斥（单线程访问 m_sub_map）
 void OkxWs::OnSubscribeQuote(int msg_id, const BufPtr buffer) {
-    QuoteSub quote_sub = *reinterpret_cast<const QuoteSub*>(buffer->Data());
-    SPDLOG_INFO("{}", zrt::to_str(quote_sub));
-    if (zrt::equal(quote_sub.channel, k_depth1)) {
-        Subscribe("bbo-tbt", quote_sub.inst_id);
-    }
-    m_sub_map[GetPKey(quote_sub)] = quote_sub;
+    const QuoteSub quote_sub = *reinterpret_cast<const QuoteSub*>(buffer->Data());
+    PostToWsThread([this, quote_sub] {
+        SPDLOG_INFO("{}", zrt::to_str(quote_sub));
+        if (zrt::equal(quote_sub.channel, k_depth1)) {
+            Subscribe("bbo-tbt", quote_sub.inst_id);
+        }
+        m_sub_map[GetPKey(quote_sub)] = quote_sub;
+    });
+}
+
+void OkxWs::OnUnsubscribeQuote(int msg_id, const BufPtr buffer) {
+    const QuoteSub quote_sub = *reinterpret_cast<const QuoteSub*>(buffer->Data());
+    PostToWsThread([this, quote_sub] {
+        SPDLOG_INFO("{}", zrt::to_str(quote_sub));
+        if (zrt::equal(quote_sub.channel, k_depth1)) {
+            Unsubscribe("bbo-tbt", quote_sub.inst_id);
+        }
+        m_sub_map.erase(GetPKey(quote_sub));
+    });
+}
+
+// 报文格式：{"op":"unsubscribe","args":[{"channel":"bbo-tbt","instId":"..."}]}
+void OkxWs::Unsubscribe(const std::string& channel, const std::string& inst_id) {
+    rapidjson::Document doc {};
+    doc.SetObject();
+    doc.AddMember("op", "unsubscribe", doc.GetAllocator());
+    rapidjson::Value args(rapidjson::kArrayType);
+    rapidjson::Value arg(rapidjson::kObjectType);
+    arg.AddMember("channel", rapidjson::StringRef(channel.c_str()), doc.GetAllocator());
+    arg.AddMember("instId", rapidjson::StringRef(inst_id.c_str()), doc.GetAllocator());
+    args.PushBack(arg, doc.GetAllocator());
+    doc.AddMember("args", args, doc.GetAllocator());
+    rapidjson::StringBuffer buffer {};
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    doc.Accept(writer);
+    SPDLOG_INFO("{}", buffer.GetString());
+    Send(buffer.GetString());
 }
 
 
 void OkxWs::on_message(websocketpp::connection_hdl, client::message_ptr msg) {
+#ifdef GTRADE_ENABLE_LATENCY_TEST
+    // 延时测试：行情入口改用统一时钟域（rdtsc/clock_gettime 自适应），
+    // 与下游所有 [TT] 差值点保持同一时钟基准，避免跨域相减。
+    int64_t monotonic = zrt::LatencyClock::Now();
+#else
     int64_t monotonic = zrt::get_monotonic19();
+#endif
     int64_t local_time = MyUTC().Epoch19();
     const std::string& payload = msg->get_payload();
     SPDLOG_TRACE("{}", payload);
@@ -172,7 +213,14 @@ void OkxWs::OnBboTbt(const int64_t entry_time, const int64_t monotonic, const st
     zrt::fill_field(depth.market, m_exchange);
     m_strategy_engine->PostMsg(kDepth1, std::make_shared<TBuffer>(depth));
 #ifdef GTRADE_ENABLE_LATENCY_TEST
-    SPDLOG_TRACE("[TT] quote_out={}us", (zrt::get_monotonic19() - monotonic) / 1000);
+    // 原 [TT] quote_out：行情解析完成耗时，统一改走直方图收集器（记录 ns 差值）
+    LATENCY_SPAN_FROM("quote_parse", monotonic);
+    // L1 行情网络下行：OKX 服务端时间戳(ms) → 本地接收时间(ns) 的差值。
+    // ex_time 为毫秒 epoch，local_time 为纳秒 epoch，统一到 ns 作差。
+    // 注意：含本地与 OKX 时钟偏差（clock skew），负值由直方图 clamp 到 0。
+    if (depth.ex_time > 0) {
+        LATENCY_RECORD("quote_net_inbound", depth.local_time - depth.ex_time * zrt::kMega);
+    }
 #endif
 }
 

@@ -20,9 +20,14 @@ class DummyOrderbook {
     using DoneCb = std::function<void(const Trade&)>;
 
 public:
+    // 生产路径：成交回报经 DummyTrade::PushDone 处理
     explicit DummyOrderbook(DummyTrade& dummy_trade):
-    m_strategy_engine(ServiceMap::GetInstance().at(k_StrategyEngine).get()),
-    m_dummy_trade(dummy_trade)
+        m_dummy_trade(&dummy_trade)
+    {
+    }
+    // 测试路径：成交回报直接进 done_cb，不依赖 DummyTrade / ServiceMap
+    explicit DummyOrderbook(DoneCb done_cb):
+        m_done_cb(std::move(done_cb))
     {
     }
     void AddEntrust(Order& entrust, const EntrustChangeCb& push_cb, const EntrustChangeCb& rsp_cb);
@@ -44,6 +49,6 @@ private:
         std::map<double,std::list<Order>>::iterator,
         std::list<Order>::iterator>
     > m_entno_index;
-    MyHandler* m_strategy_engine {};
-    DummyTrade& m_dummy_trade;
+    DummyTrade* m_dummy_trade {};
+    DoneCb m_done_cb {};
 };

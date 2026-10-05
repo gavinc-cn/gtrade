@@ -83,6 +83,12 @@ public:
 protected:
     // 只能子类调用, 所以调用的时候m_uri不会被析构(谁异步, 谁负责拷贝)
     const std::string& RefUri() const noexcept { return m_uri; }
+    // 把任务投递到本连接的 io 线程执行（与 websocketpp 回调串行执行）
+    // 前提：本连接的 io_service 只由单个线程驱动（run() 里只起一次 client::run 单线程，见 websocket_base.cpp）；
+    //       若改为多线程驱动，必须改为向同一 strand 投递，否则会重新引入数据竞争
+    void PostToWsThread(std::function<void()> task) {
+        m_client.get_io_service().post(std::move(task));
+    }
 private:
     void schedule_reconnect();
     void reconnect();

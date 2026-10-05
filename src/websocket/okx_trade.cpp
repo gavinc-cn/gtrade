@@ -17,6 +17,7 @@
 #include "strategy_engine.h"
 #include "OkexClient.h"
 #include "i_client_dump.h"
+#include "zrtools/latency/latency_tracer.h"  // 延时测试打点宏（未启用时编译为空）
 
 OkxTrade::OkxTrade(const GTradeConfig& gtrade_cfg, const std::string& account_id, StrategyEngine& strat_engine):
 WebSocketBase(GetWsPrivateUrl(gtrade_cfg, account_id), gtrade_cfg.proxy_config.http),
@@ -97,7 +98,12 @@ void OkxTrade::Login() {
     rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
     doc.Accept(writer);
 
-    SPDLOG_INFO("{}", buffer.GetString());
+    // 登录报文脱敏打印：apiKey/passphrase 仅保留前 4 位、sign 仅保留长度，禁止明文凭据落盘
+    const std::string& api_key = m_gtrade_cfg.account_map[m_account_id].key;
+    const std::string& passphrase = m_gtrade_cfg.account_map[m_account_id].passphrase;
+    auto mask_head = [](const std::string& s) { return s.size() > 4 ? s.substr(0, 4) + "****" : "****"; };
+    SPDLOG_INFO("login report: apiKey={}, passphrase={}, timestamp={}, sign_len={}", mask_head(api_key),
+                mask_head(passphrase), timestamp, signature.size());
     Send(buffer.GetString());
 }
 
@@ -256,7 +262,7 @@ void OkxTrade::SubscribeAll() {
 void OkxTrade::OnPlaceOrder(int msg_id, const BufPtr buffer) {
     const Order& recv_data = buffer->RefData<Order>();
 #ifdef GTRADE_ENABLE_LATENCY_TEST
-    SPDLOG_TRACE("[TT] trade_in={}us", (zrt::get_monotonic19() - recv_data.quote_monotonic) / 1000);
+    LATENCY_SPAN_FROM("trade_recv", recv_data.quote_monotonic);  // 原 [TT] trade_in
 #endif
     SPDLOG_INFO("{}", zrt::to_str(recv_data));
 
@@ -264,6 +270,12 @@ void OkxTrade::OnPlaceOrder(int msg_id, const BufPtr buffer) {
 
     sonic_json::Node arg(sonic_json::kObject);
     AddMember(arg, alloc, "instId", recv_data.inst_id);
+    // instIdCode 为 OKX 必填参数，0/缺失会被拒（51000 Parameter instIdCode error）。
+    // 正常路径（策略/HTTP 下单）应在下单前填充正确值，此处仅对异常值告警，不改变发送行为。
+    if (recv_data.inst_id_code <= 0) {
+        SPDLOG_ERROR("OnPlaceOrder: invalid inst_id_code={} entno={} inst={}",
+                     recv_data.inst_id_code, recv_data.entno, recv_data.inst_id);
+    }
     AddMember(arg, alloc, "instIdCode", recv_data.inst_id_code);
     AddMember(arg, alloc, "tdMode", DictTradeMode2Okx(recv_data.trade_mode));
     AddMember(arg, alloc, "clOrdId", recv_data.entno);
@@ -279,7 +291,11 @@ void OkxTrade::OnPlaceOrder(int msg_id, const BufPtr buffer) {
     sonic_json::Node node(sonic_json::kObject);
     AddMember(node, alloc, "id", recv_data.entno);
     AddMember(node, alloc, "op", "order");
-    AddMember(node, alloc, "expTime", recv_data.expire_time / zrt::kMega);
+    // expTime 仅在设置了超时时间时携带：expire_time=0 表示 GTC（长期有效），
+    // 原样序列化为 expTime:0 会被 OKX 拒绝（51000 Parameter expTime error）
+    if (recv_data.expire_time > 0) {
+        AddMember(node, alloc, "expTime", recv_data.expire_time / zrt::kMega);
+    }
     node.AddMember("args", std::move(args), alloc);
 
     Order entrust = recv_data;
@@ -289,11 +305,13 @@ void OkxTrade::OnPlaceOrder(int msg_id, const BufPtr buffer) {
 
     std::string send_msg = node.Dump();
 #ifdef GTRADE_ENABLE_LATENCY_TEST
-    SPDLOG_TRACE("[TT] before_send={}us", (zrt::get_monotonic19() - recv_data.quote_monotonic) / 1000);
+    LATENCY_SPAN_FROM("before_send", recv_data.quote_monotonic);  // 原 [TT] before_send
 #endif
     Send(send_msg);
 #ifdef GTRADE_ENABLE_LATENCY_TEST
-    SPDLOG_INFO("[TT] tick2order={}us", (zrt::get_monotonic19() - recv_data.quote_monotonic) / 1000);
+    LATENCY_SPAN_FROM("tick2order", recv_data.quote_monotonic);   // 原 [TT] tick2order ★端到端
+    // 记录订单发出网卡的时刻，供 L9(ack往返)/L10(成交往返) 关联
+    zrt::LatencyCorrelator::Instance().RecordSend(recv_data.entno, zrt::LatencyClock::Now());
 #endif
     SPDLOG_INFO("sent to okx: {}", send_msg);
 }

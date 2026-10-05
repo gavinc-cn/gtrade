@@ -126,7 +126,19 @@ void DummyOrderbook::MatchOrders(EntMap& ent_map, const EntrustChangeCb& cb) {
         while (!same_price_ents.empty() && quote_amt > 0) {
             auto& entrust = same_price_ents.front();
             const double trade_vol = std::min(entrust.amount, quote_amt);
-            m_dummy_trade.PushDone(match_px, trade_vol, entrust);
+            if (m_done_cb) {
+                // 测试通道：仅回填撮合结果字段（完整 Trade 字段映射是 DummyTrade 的职责，
+                // 不在本类验证范围内）
+                Trade trade {};
+                trade.ordno = entrust.entno;
+                trade.td_px = match_px;
+                trade.td_qty = trade_vol;
+                trade.td_side = entrust.bs_side;
+                trade.filled_time = m_depth.ex_time;
+                m_done_cb(trade);
+            } else {
+                m_dummy_trade->PushDone(match_px, trade_vol, entrust);
+            }
             // 更新订单状态
             entrust.filled += trade_vol;
             entrust.remain = entrust.amount - entrust.filled;
