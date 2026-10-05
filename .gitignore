@@ -25,5 +25,4 @@ web_client/node_modules/
 vcpkg_installed/
 bench_out/
 mock_exchange/certs/
-# deploy/config/ 不再忽略（2026-09-29）：该目录现在是各启动模式的覆盖配置，
-# 必须入库；公开仓库侧由 tools/sync_to_public/.publicignore 排除
+# deploy/config/ 不再忽略（2026-09-29）：该目录现在是各启动模式的覆盖配置，必须入库
