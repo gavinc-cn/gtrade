@@ -76,7 +76,10 @@ TEST(WalEntryTest, CrcValidation) {
     EXPECT_TRUE(entry->ValidateCrc());
 
     // 修改数据后验证应该失败
-    entry->data[0] = 'X';
+    // 注：WalEntry::data 是柔性数组成员（char[0]），经 entry->data 取下标会让 GCC 13
+    // 在 -O3 下报 -Werror=array-bounds（subscript 0 outside 'char [0]'），故改为按原始
+    // 缓冲区 + 头部偏移写（等价于 data[0]）。
+    buffer[zrt::kWalEntryHeaderSize<TestEntryType>] = 'X';
     EXPECT_FALSE(entry->ValidateCrc());
 
     // 重新更新 CRC 后应该成功
