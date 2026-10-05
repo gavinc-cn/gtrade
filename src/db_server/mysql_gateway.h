@@ -47,7 +47,11 @@ public:
     void OnDbSetPosition(int msg_id, const BufPtr buffer);
     void OnDbSetPortfolioPosition(int msg_id, const BufPtr buffer);
     void OnDbSetStrategyLog(int msg_id, const BufPtr buffer);
-    void OnDbQueryHisOrdersReq(int msg_id, const BufPtr buffer, std::promise<BufPtr>& rsp_promise);
+    BufPtr OnDbQueryHisOrdersReq(int msg_id, const BufPtr buffer);
+    void OnDbSetInstrumentScope(int msg_id, const BufPtr buffer);
+    BufPtr OnDbQueryInstrumentScopeReq(int msg_id, const BufPtr buffer);
+    // 启动高水位：查 order / trade 的最大号（同步），供客户端设置号段基数
+    BufPtr OnDbQueryMaxIdsReq(int msg_id, const BufPtr buffer);
 
 private:
     // SQL字符串转义函数

@@ -114,6 +114,10 @@ bool MySqlGateway::Init() {
     m_strategy_engine = ServiceMap::GetInstance().at(k_StrategyEngine).get();
     m_message_server = ServiceMap::GetInstance().at(k_MessageServer).get();
 
+    // 在 Init() 创建 MySQL 客户端：所有服务的 Init() 都先于任何 Start()（gtrade.cpp 启动序列），
+    // 保证 StrategyEngine::Start() 中的同步读（标的范围启动恢复）不依赖 Start() 的遍历顺序
+    m_mysql_client = std::make_unique<MysqlClient>(m_gtrade_cfg.db_config);
+
     InstallDefaultHandler([](int msg_id, const BufPtr buffer) {
         SPDLOG_ERROR("msg_id={} buf_sz={}", GetEmName_MsgId(msg_id), buffer->GetSize());
     });
@@ -132,13 +136,16 @@ bool MySqlGateway::Init() {
     ZRT_ADD_HANDLER(kDbSetPortfolioPosition, MySqlGateway::OnDbSetPortfolioPosition);
     ZRT_ADD_HANDLER(kDbSetStrategyLog, MySqlGateway::OnDbSetStrategyLog);
     ZRT_ADD_SYNC_HANDLER(kDbQueryHisOrdersReq, MySqlGateway::OnDbQueryHisOrdersReq);
+    ZRT_ADD_HANDLER(kDbSetInstrumentScope, MySqlGateway::OnDbSetInstrumentScope);
+    ZRT_ADD_SYNC_HANDLER(kDbQueryInstrumentScopeReq, MySqlGateway::OnDbQueryInstrumentScopeReq);
+    ZRT_ADD_SYNC_HANDLER(kDbQueryMaxIdsReq, MySqlGateway::OnDbQueryMaxIdsReq);
 
     return true;
 }
 
 bool MySqlGateway::Start() {
     SPDLOG_INFO("{}", __PRETTY_FUNCTION__ );
-    m_mysql_client = std::make_unique<MysqlClient>(m_gtrade_cfg.db_config);
+    // m_mysql_client 已在 Init() 创建（早于所有服务的 Start()）
 
     // 启动共享内存轮询定时器（仅实盘模式）
     if constexpr (GlobalConst::IsRealTrading) {
@@ -393,11 +400,20 @@ void MySqlGateway::OnDbSetStrategyLog(int msg_id, const BufPtr buffer) {
 }
 
 // 查询历史委托
-void MySqlGateway::OnDbQueryHisOrdersReq(int msg_id, const BufPtr buffer, std::promise<BufPtr>& rsp_promise) {
+BufPtr MySqlGateway::OnDbQueryHisOrdersReq(int msg_id, const BufPtr buffer) {
     const auto& recv_data = *reinterpret_cast<const HisEntrustsQryReq*>(buffer->Data());
     SPDLOG_INFO("{}", zrt::to_str(recv_data));
 
     BufPtr rsp_buf = std::make_shared<TBuffer>();
+
+    // 确保连接可用：连接失败时返回空响应
+    // 注意：绝不能把空连接句柄传给 mysql_query（libmysqlclient 解引用 NULL 会段错误）
+    if (!m_mysql_client->Connect()) {
+        SPDLOG_ERROR("MySQL connection unavailable, return empty response");
+        return rsp_buf;
+    }
+    MYSQL* conn = m_mysql_client->GetConnection();
+
     try {
         // 构造查询条件
         std::string sql = "SELECT market, account_id, inst_type, inst_id, policy_no, private_no, "
@@ -431,16 +447,16 @@ void MySqlGateway::OnDbQueryHisOrdersReq(int msg_id, const BufPtr buffer, std::p
         SPDLOG_DEBUG("Executing SQL: {}", sql);
 
         // 执行查询
-        if (mysql_query(m_mysql_client->GetConnection(), sql.c_str())) {
-            SPDLOG_ERROR("mysql_query failed: {}", mysql_error(m_mysql_client->GetConnection()));
-            return;
+        if (mysql_query(conn, sql.c_str())) {
+            SPDLOG_ERROR("mysql_query failed: {}", mysql_error(conn));
+            return rsp_buf;
         }
 
         // 获取查询结果
-        MYSQL_RES* result = mysql_store_result(m_mysql_client->GetConnection());
+        MYSQL_RES* result = mysql_store_result(conn);
         if (!result) {
-            SPDLOG_ERROR("mysql_store_result failed: {}", mysql_error(m_mysql_client->GetConnection()));
-            return;
+            SPDLOG_ERROR("mysql_store_result failed: {}", mysql_error(conn));
+            return rsp_buf;
         }
 
         MYSQL_ROW row {};
@@ -494,7 +510,149 @@ void MySqlGateway::OnDbQueryHisOrdersReq(int msg_id, const BufPtr buffer, std::p
         SPDLOG_ERROR("Exception in OnDbQueryHisEntrustsReq: {}", e.what());
     }
 
-    rsp_promise.set_value(rsp_buf);
+    return rsp_buf;
+}
+
+
+// 全量替换写：事务内 DELETE + 批量 INSERT（低频操作；失败记日志 + Slack 告警，不回滚内存状态）
+void MySqlGateway::OnDbSetInstrumentScope(int msg_id, const BufPtr buffer) {
+    // 保存属低频操作，失败必须可见：发 Slack 告警（不做节流，区别于高频订单写的 m_db_failure_alert）
+    const auto notify_fail = [](const std::string& detail) {
+        SendNotifyMsg(k_error, "标的范围落库失败", fmt::format("标的范围保存未生效（已跳过写入）：{}", detail));
+    };
+    if (m_mysql_client == nullptr) {
+        SPDLOG_ERROR("instrument_scope write skipped: mysql gateway not started");
+        notify_fail("MySQL 网关未初始化");
+        return;
+    }
+    std::vector<InstrumentScopeItem> items {};
+    buffer->ForEach<InstrumentScopeItem>([&items](const InstrumentScopeItem& item) { items.push_back(item); });
+    // 连接存活预检：Execute 内部含 Connect + mysql_ping + 断线重连，
+    // 避免裸连接被 wait_timeout 回收后事务写静默失败
+    if (!m_mysql_client->Execute("SELECT 1")) {
+        SPDLOG_ERROR("instrument_scope write skipped: mysql connection unavailable");
+        notify_fail("数据库连接不可用");
+        return;
+    }
+    MYSQL* conn = m_mysql_client->GetConnection();
+    // 预检 SELECT 1 的结果集必须取走，否则下一条命令报 CR_COMMANDS_OUT_OF_SYNC(2014)
+    if (MYSQL_RES* probe_result = mysql_store_result(conn)) {
+        mysql_free_result(probe_result);
+    }
+    if (mysql_query(conn, "START TRANSACTION") || mysql_query(conn, "DELETE FROM instrument_scope")) {
+        const std::string err = mysql_error(conn);
+        SPDLOG_ERROR("instrument_scope delete failed: {}", err);
+        mysql_query(conn, "ROLLBACK");
+        notify_fail(fmt::format("全量清理失败（已回滚）：{}", err));
+        return;
+    }
+    for (size_t i = 0; i < items.size(); ++i) {
+        // inst_type 是标的唯一性的一部分：OKX 的币币杠杆复用现货的 instId，只有加列才能与表主键
+        // (market, inst_id, inst_type) 对齐。空串（加列前的老行/未带类型的客户端）由引擎归一化后再落库。
+        const std::string sql = fmt::format("INSERT INTO instrument_scope (market, inst_id, inst_type) "
+                                            "VALUES ('{}', '{}', '{}')",
+                                            EscapeString(std::string(items[i].market)),
+                                            EscapeString(std::string(items[i].inst_id)),
+                                            EscapeString(std::string(items[i].inst_type)));
+        if (mysql_query(conn, sql.c_str())) {
+            const std::string err = mysql_error(conn);
+            SPDLOG_ERROR("instrument_scope insert failed: {}", err);
+            mysql_query(conn, "ROLLBACK");
+            notify_fail(fmt::format("写入 market={} inst_id={} inst_type={} 失败（已回滚）：{}",
+                                    std::string(items[i].market), std::string(items[i].inst_id),
+                                    std::string(items[i].inst_type), err));
+            return;
+        }
+    }
+    if (mysql_query(conn, "COMMIT")) {
+        const std::string err = mysql_error(conn);
+        SPDLOG_ERROR("instrument_scope commit failed: {}", err);
+        notify_fail(fmt::format("提交失败（事务可能已中断）：{}", err));
+        return;
+    }
+    SPDLOG_INFO("instrument_scope saved: {} rows", items.size());
+}
+
+// 同步读（启动加载）：返回逐条 Append 的 InstrumentScopeItem；失败记日志 + Slack 告警并返回空 buffer
+BufPtr MySqlGateway::OnDbQueryInstrumentScopeReq(int msg_id, const BufPtr buffer) {
+    // 启动读失败必须可见：发 Slack 告警（启动恢复不会失败重试，只会按空范围继续）
+    const auto notify_fail = [](const std::string& detail) {
+        SendNotifyMsg(k_error, "标的范围启动读失败", fmt::format("标的范围启动恢复将按空范围处理：{}", detail));
+    };
+    BufPtr rsp_buf = std::make_shared<TBuffer>();
+    if (m_mysql_client == nullptr) {
+        SPDLOG_ERROR("instrument_scope read skipped: mysql gateway not started");
+        notify_fail("MySQL 网关未初始化");
+        return rsp_buf;
+    }
+    if (!m_mysql_client->Connect()) {
+        SPDLOG_ERROR("MySQL connection unavailable, return empty instrument_scope response");
+        notify_fail("数据库连接不可用");
+        return rsp_buf;
+    }
+    MYSQL* conn = m_mysql_client->GetConnection();
+    if (mysql_query(conn, "SELECT market, inst_id, inst_type FROM instrument_scope")) {
+        const std::string err = mysql_error(conn);
+        SPDLOG_ERROR("mysql_query failed: {}", err);
+        notify_fail(fmt::format("查询失败：{}", err));
+        return rsp_buf;
+    }
+    MYSQL_RES* result = mysql_store_result(conn);
+    if (!result) {
+        const std::string err = mysql_error(conn);
+        SPDLOG_ERROR("mysql_store_result failed: {}", err);
+        notify_fail(fmt::format("读取结果集失败：{}", err));
+        return rsp_buf;
+    }
+    MYSQL_ROW row {};
+    int count = 0;
+    while ((row = mysql_fetch_row(result))) {
+        InstrumentScopeItem item {};
+        zrt::fill_field(item.market, std::string(row[0] ? row[0] : ""));
+        zrt::fill_field(item.inst_id, std::string(row[1] ? row[1] : ""));
+        // inst_type 可能为空（加列前写入的老行）：不在这里补，由引擎 ApplyInstrumentScope 统一归一化
+        zrt::fill_field(item.inst_type, std::string(row[2] ? row[2] : ""));
+        rsp_buf->Append(item);
+        ++count;
+    }
+    mysql_free_result(result);
+    SPDLOG_INFO("instrument_scope loaded: {} rows", count);
+    return rsp_buf;
+}
+
+BufPtr MySqlGateway::OnDbQueryMaxIdsReq(int msg_id, const BufPtr buffer) {
+    // 启动高水位：查 order / trade 的最大号，供引擎设置号段基数，
+    // 保证跨重启（含"同一秒内重启"）ID 单调不重叠（方案 rev4 §8）。
+    // 两张表主键即 entno / tdno，MAX() 走主键末行，代价可忽略。
+    // 数据库不可用时返回空响应（调用方回退时间基数并记日志），不阻塞启动。
+    BufPtr rsp_buf = std::make_shared<TBuffer>();
+    if (m_mysql_client == nullptr || !m_mysql_client->Connect()) {
+        SPDLOG_ERROR("max ids query skipped: MySQL connection unavailable");
+        return rsp_buf;
+    }
+    MYSQL* conn = m_mysql_client->GetConnection();
+
+    // 单条 SQL 取两个最大值；表空时 MAX() 为 NULL，用 IFNULL 归 0
+    const char* sql =
+        "SELECT IFNULL((SELECT MAX(entno) FROM `order`), 0), IFNULL((SELECT MAX(tdno) FROM trade), 0)";
+    if (mysql_query(conn, sql)) {
+        SPDLOG_ERROR("mysql_query failed: {}", mysql_error(conn));
+        return rsp_buf;
+    }
+    MYSQL_RES* result = mysql_store_result(conn);
+    if (!result) {
+        SPDLOG_ERROR("mysql_store_result failed: {}", mysql_error(conn));
+        return rsp_buf;
+    }
+    if (MYSQL_ROW row = mysql_fetch_row(result)) {
+        MaxIdsQryRsp rsp {};
+        rsp.max_entno = row[0] ? std::atoll(row[0]) : 0;
+        rsp.max_tdno  = row[1] ? std::atoll(row[1]) : 0;
+        rsp_buf->Append(rsp);
+        SPDLOG_INFO("max ids from db: max_entno={}, max_tdno={}", rsp.max_entno, rsp.max_tdno);
+    }
+    mysql_free_result(result);
+    return rsp_buf;
 }
 
 
