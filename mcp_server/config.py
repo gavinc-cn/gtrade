@@ -5,19 +5,13 @@ GTrade MCP Server 配置
 
 import os
 from pathlib import Path
-from dotenv import load_dotenv
-
-# 加载 .env 文件
-env_path = Path(__file__).parent.parent / '.env'
-if env_path.exists():
-    load_dotenv(env_path)
 
 # ── 项目根目录 ──────────────────────────────────────────────────────────────────
 GTRADE_ROOT = Path(os.environ.get("GTRADE_ROOT", "/opt/win/gtrade"))
 
 # ── 服务地址 ────────────────────────────────────────────────────────────────────
-# Flask web_server（查询类接口，需 JWT）
-FLASK_BASE_URL = os.environ.get("FLASK_BASE_URL", "http://127.0.0.1:5000")
+# Flask web_server（查询类接口，需 JWT）；app.py 实际绑定 46011（文档中旧的 :5000 已过期）
+FLASK_BASE_URL = os.environ.get("FLASK_BASE_URL", "http://127.0.0.1:46011")
 # C++ HttpGateway（操作类接口，无需认证）
 HTTP_GW_BASE_URL = os.environ.get("HTTP_GW_BASE_URL", "http://127.0.0.1:46012")
 
@@ -25,18 +19,15 @@ HTTP_GW_BASE_URL = os.environ.get("HTTP_GW_BASE_URL", "http://127.0.0.1:46012")
 def _load_web_credentials() -> tuple[str, str]:
     import yaml
     cfg_file = GTRADE_ROOT / "config/config.yml"
-    user = os.environ.get("FLASK_USERNAME", "")
-    password = os.environ.get("FLASK_PASSWORD", "")
-    if not user and cfg_file.exists():
+    if cfg_file.exists():
         with open(cfg_file, "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
-            user = cfg.get("user", "")
-            password = cfg.get("password", "")
-    return user, password
+            return cfg.get("user", "admin"), cfg.get("password", "admin")
+    return "admin", "admin"
 
 _DEFAULT_USER, _DEFAULT_PASS = _load_web_credentials()
-FLASK_USERNAME = _DEFAULT_USER
-FLASK_PASSWORD = _DEFAULT_PASS
+FLASK_USERNAME = os.environ.get("FLASK_USERNAME", _DEFAULT_USER)
+FLASK_PASSWORD = os.environ.get("FLASK_PASSWORD", _DEFAULT_PASS)
 
 # ── 路径常量 ────────────────────────────────────────────────────────────────────
 BUILD_DIR             = GTRADE_ROOT / "cmake-build-debug-dockerubuntu24"

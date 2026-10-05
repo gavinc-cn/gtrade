@@ -16,7 +16,7 @@ Claude Desktop 配置（~/.config/claude/claude_desktop_config.json）：
           "args": ["/opt/win/gtrade/mcp_server/server.py"],
           "env": {
             "GTRADE_ROOT": "/opt/win/gtrade",
-            "FLASK_BASE_URL": "http://127.0.0.1:5000",
+            "FLASK_BASE_URL": "http://127.0.0.1:46011",
             "HTTP_GW_BASE_URL": "http://127.0.0.1:46012"
           }
         }
@@ -25,7 +25,7 @@ Claude Desktop 配置（~/.config/claude/claude_desktop_config.json）：
 
 环境变量（均有合理默认值）：
     GTRADE_ROOT           项目根目录（默认 /opt/win/gtrade）
-    FLASK_BASE_URL        Flask web_server 地址（默认 http://127.0.0.1:5000）
+    FLASK_BASE_URL        Flask web_server 地址（默认 http://127.0.0.1:46011）
     HTTP_GW_BASE_URL      C++ HttpGateway 地址（默认 http://127.0.0.1:46012）
     FLASK_USERNAME        Flask 登录用户名（默认读取 config/config.yml）
     FLASK_PASSWORD        Flask 登录密码（默认读取 config/config.yml）
@@ -42,13 +42,6 @@ import os
 # 确保 mcp_server/ 目录在 Python 路径中
 sys.path.insert(0, os.path.dirname(__file__))
 
-# 设置进程名，便于 stop.sh / status.sh 按名称识别和管理
-try:
-    import setproctitle
-    setproctitle.setproctitle("gtrade_mcp")
-except ImportError:
-    pass  # setproctitle 不是必须依赖，缺失时静默跳过
-
 from mcp.server.fastmcp import FastMCP
 
 import flask_client
@@ -57,6 +50,7 @@ from tools.query_tools import register_query_tools
 from tools.control_tools import register_control_tools
 from tools.backtest_tools import register_backtest_tools
 from tools.codegen_tools import register_codegen_tools
+from tools.trade_tools import register_trade_tools
 
 # ── MCP server 实例 ──────────────────────────────────────────────────────────────
 mcp = FastMCP(
@@ -88,6 +82,17 @@ B. 开发全新策略类型（完整流程）：
 - list_strategies() 中 status=1 表示运行中，status=0 表示已停止
 - build_strategy_plugin 失败时，根据 errors 字段修正代码后重试（最多 5 次）
 - start/stop/restart 的 strategy_id 参数为策略名称（strat_name 字段）
+
+C. MCP 交易接口（实验性，直接操控引擎下单）：
+  1. get_balances()                          — 确认可用资金
+  2. get_depth(inst_id="BTC-USDT")           — 查看最新行情
+  3. place_order(account_id, inst_id, ...)   — 下单，返回 order_id
+  4. get_orders()                            — 轮询确认委托状态
+  5. cancel_order(account_id, order_id)      — 撤单
+
+注意：place_order 返回的 order_id 为本地编号，OKX 确认异步完成。
+      td_mode: cash=现货, cross=全仓, isolated=逐仓
+      ord_type: limit/market/post_only/fok/ioc
 """,
 )
 
@@ -96,6 +101,7 @@ register_query_tools(mcp)
 register_control_tools(mcp)
 register_backtest_tools(mcp)
 register_codegen_tools(mcp)
+register_trade_tools(mcp)
 
 # ── MCP Resources（只读上下文，AI 可直接查阅无需调用工具） ──────────────────────
 
@@ -161,6 +167,29 @@ def active_strategies_resource() -> str:
 
 
 # ── 启动 ─────────────────────────────────────────────────────────────────────────
+# 进程名按传输方式区分，两者必须不同，否则由 AI 工具/编辑器（Zed、Cursor 等）拉起的
+# stdio 实例会被 deploy/svc.py 误判成它管理的 SSE 服务「运行中」，进而 start 静默跳过、
+# stop 误杀编辑器进程、clean 被永久阻塞。根因与影响见
+# doc_ai/bug_report_history/20261002_1036_svc状态误报mcp进程名冲突/。
+# 改这两个名字必须同步 deploy/svc.py 的 SVC_PROC_NAME（见 doc_ai/spec/deploy/服务启停脚本.md 强关系）。
+# Linux comm 限 15 字符，下面两个名字分别为 10 / 13 字符。
+PROC_NAME_STDIO = "gtrade_mcp"   # stdio：由 AI 工具拉起，不归 svc.py 管理
+PROC_NAME_SSE = "gtrade_mcpsse"  # sse：deploy/svc.py 管理的 mcp 服务（:8765）
+
+
+def set_process_name(transport):
+    """按传输方式设置进程名，便于 deploy/svc.sh 的 status/stop 按名称精确识别服务。
+
+    transport 为 "sse" 时用 PROC_NAME_SSE，其余（stdio）用 PROC_NAME_STDIO。
+    setproctitle 不是必须依赖，缺失时静默跳过（进程名保持解释器名，功能不受影响）。
+    """
+    try:
+        import setproctitle
+        setproctitle.setproctitle(PROC_NAME_SSE if transport == "sse" else PROC_NAME_STDIO)
+    except ImportError:
+        pass  # setproctitle 未安装，不设置进程名
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="GTrade MCP Server")
     parser.add_argument(
@@ -182,8 +211,14 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    # 进程名依赖 --transport，必须在参数解析之后设置
+    set_process_name(args.transport)
+
     if args.transport == "sse":
         print(f"[gtrade-mcp] 启动 HTTP SSE 传输，监听 {args.host}:{args.port}", flush=True)
-        mcp.run(transport="sse", host=args.host, port=args.port)
+        # mcp 1.30.0 的 run() 不接收 host/port 参数，需经 ServerSettings 设置
+        mcp.settings.host = args.host
+        mcp.settings.port = args.port
+        mcp.run(transport="sse")
     else:
         mcp.run(transport="stdio")
