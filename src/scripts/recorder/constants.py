@@ -1,2 +1,0 @@
-CLICKHOUSE = 'clickhouse'
-CSV = 'csv'

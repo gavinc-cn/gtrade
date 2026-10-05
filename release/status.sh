@@ -1,1 +1,0 @@
-ps -ef | grep gtrade | grep -v grep

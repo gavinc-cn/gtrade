@@ -1,8 +1,0 @@
-param:
-  - {id: data_repo_prefix, name: 数据仓库路径前缀}
-  - {id: data_type_vec, name: 数据类型列表}
-  - {id: account_id, name: 账户}
-indicator:
-  - {id: record_count, name: 已记录数据条数}
-  - {id: file_count, name: 已创建文件数}
-  - {id: last_record_time, name: 最后记录时间}
