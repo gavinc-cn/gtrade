@@ -95,7 +95,8 @@ TEST_F(BollingerTest, BollingerBands) {
         bb.AddValue(static_cast<double>(i));
     }
 
-    double upper, middle, lower;
+    // {} 初始化：GetBollinger 在窗口为空时提前返回不写输出，未初始化读的是不确定值
+    double upper{}, middle{}, lower{};
     bb.GetBollinger(upper, middle, lower);
 
     // Mean should be 3
@@ -177,7 +178,8 @@ TEST_F(BollingerTest, NegativeValues) {
     EXPECT_DOUBLE_EQ(bb.GetAverage(), -20.0);
     EXPECT_GT(bb.GetStdDev(), 0.0);
 
-    double upper, middle, lower;
+    // {} 初始化：GetBollinger 在窗口为空时提前返回不写输出，未初始化读的是不确定值
+    double upper{}, middle{}, lower{};
     bb.GetBollinger(upper, middle, lower);
 
     EXPECT_GT(upper, middle);
@@ -251,7 +253,8 @@ TEST_F(BollingerTest, RealWorldScenario) {
         bb.AddValue(price);
     }
 
-    double upper, middle, lower;
+    // {} 初始化：GetBollinger 在窗口为空时提前返回不写输出，未初始化读的是不确定值
+    double upper{}, middle{}, lower{};
     bb.GetBollinger(upper, middle, lower);
 
     // Sanity checks
@@ -274,7 +277,8 @@ TEST_F(BollingerTest, MethodConsistency) {
         bb.AddValue(static_cast<double>(i));
     }
 
-    double upper, middle, lower;
+    // {} 初始化：GetBollinger 在窗口为空时提前返回不写输出，未初始化读的是不确定值
+    double upper{}, middle{}, lower{};
     bb.GetBollinger(upper, middle, lower);
 
     EXPECT_DOUBLE_EQ(upper, bb.GetUpperBound());

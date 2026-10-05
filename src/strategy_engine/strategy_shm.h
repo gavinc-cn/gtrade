@@ -270,7 +270,11 @@ inline bool WriteCmd(ShmChannelHeader* const hdr,
                      uint8_t* const data,
                      const uint32_t msg_type)
 {
-    return WriteMsg(hdr, data, msg_type, nullptr, 0u);
+    // 控制命令不带 payload：len=0 时 WriteMsg 不会读 payload，但传 nullptr 会让
+    // GCC 13 在 -O3 内联后由 _FORTIFY_SOURCE 的 __builtin___memcpy_chk 报硬错误
+    // （error: argument 2 null where non-null expected），故用 data（非空且合法）占位，
+    // 语义与传 nullptr、len=0 完全一致。
+    return WriteMsg(hdr, data, msg_type, data, 0u);
 }
 
 }  // namespace strat_shm_detail
