@@ -1,0 +1,30 @@
+# demo 策略配置（example 模式）
+# ---------------------------------------------------------------------------
+# account_id 必须与 account_config 指向的 secret.yml 中的账户键名一致；
+# 下面是占位账户名 demo_account，请按自己的 secret.yml 修改。
+# market=okx_dummy 配合模板默认端点（本地 mock_exchange）使用。
+# ---------------------------------------------------------------------------
+strat_template_id: StratDemo
+
+# 动态插件路径（存在时走 dlopen 加载；注释掉则走引擎内置的 StratDemo）
+so_path: strategy_plugins/libstrategy_demo_plugin.so
+
+# 日志
+logger:
+  log_file: "log/strat_demo/demo.log"
+  async: false
+  log_level: "trace,info,error"
+
+### 策略自定义参数 ###
+# 账户
+account_id: demo_account
+# 市场
+market: okx_dummy
+# 合约
+instrument: BTC-USDT
+# 最小下单量
+min_entamt: 0.0001
+# K线窗口大小
+kline_window_size: 2
+# 手续费
+fee: 0.0005

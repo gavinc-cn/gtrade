@@ -26,6 +26,10 @@
 //
 //   } // extern "C"
 //
+// 订阅生命周期契约：策略 Stop / Delete / Restart 时引擎会清空该策略的行情（quote，depth1）
+// 订阅 owner（Trade/KLine 订阅不在清理范围），因此 SubscribeQuote 必须在 OnStart()（或每次 Start）
+// 重放，不能只在 OnInit() 订阅一次——否则策略重启后会静默失去行情（不报错，OnDepth1 等回调不再被调用）。
+//
 
 #pragma once
 

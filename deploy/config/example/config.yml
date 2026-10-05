@@ -1,0 +1,35 @@
+# example 模式覆盖示例（稀疏覆盖层）
+# ---------------------------------------------------------------------------
+# 用途：演示「模板层 config/config.yml + 模式覆盖层 deploy/config/<mode>/」的标准写法，
+#      并用最小配置跑通 demo 策略（StratDemo）。
+#
+# 用法（在项目根执行，需先编译出 bin/）：
+#   1) cmake --build build --target strategy_demo_plugin     # 产出 bin/strategy_plugins/libstrategy_demo_plugin.so
+#   2) 先起本地假交易所（模板默认端点就是它）：
+#        python3 mock_exchange/run.py --config mock_exchange/config/mock.yml &
+#   3) ./deploy/svc.sh -c example start gtrade
+#
+# 合并规则（由 deploy/gen_config.py 校验，违反则启动中止）：
+#   1. 只写与模板有差异的键；键必须已存在于 config/config.yml（多余键报错，错误配置到不了程序）；
+#   2. dict 递归合并，list / 标量整体替换；模板中的 null 视为占位，可被覆盖层任意类型替换；
+#   3. 本目录允许的条目：与模板同名的 yml（config.yml / data_config.yml / slack_config.yml /
+#      backtest_config.yml，参与合并）、strategy_config/（原样复制到 bin/strategy_config/，
+#      供本文件里的 strategy_config 列表引用）。
+# ---------------------------------------------------------------------------
+
+# 只跑 demo 策略（模板默认 strategy_config 为空 → 引擎不加载任何策略）
+strategy_config:
+  - strategy_config/strat_demo_BTC_USDT.yml
+
+# 本地联调：日志开 debug，便于观察 demo 策略的行情回调与下单
+logger:
+  show_level: "debug"
+
+# 公开仓库不含 mTLS 证书，默认不启用桌面端 gRPC；需要时先跑 deploy/certs/generate_certs.sh
+# 生成证书（写入 deploy/certs/），再把 enabled 改回 true。
+desktop_gateway:
+  enabled: false
+
+# 注意：模板 config/config.yml 默认把 okx / okx_dummy 指向本地 mock_exchange
+# （REST 127.0.0.1:18080、WS TLS wss://127.0.0.1:18443）且 proxy 为空。
+# 若改为真实交易所端点，请同时确认账号、资金与风控——demo 策略会真实下单。

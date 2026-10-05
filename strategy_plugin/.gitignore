@@ -1,0 +1,12 @@
+*.log
+
+.idea/
+.vscode/
+.trae/
+.obsidian/
+.vercel/
+.claude/
+build*/
+**/__pycache__/
+**/cmake-build-*/
+log/

@@ -1,0 +1,11 @@
+param:
+  - { id: account_id, name: 账户 }
+  - { id: market, name: 市场 }
+  - { id: instrument, name: 合约 }
+  - { id: max_entamt, name: 最大下单量 }
+  - { id: min_entamt, name: 最小下单量 }
+  - { id: kline_window_size, name: K线窗口大小 }
+  - { id: fee, name: 手续费 }
+indicator:
+  - { id: status_str, name: 策略状态 }
+  - { id: cur_pos, name: 当前仓位 }
