@@ -28,7 +28,7 @@ public:
     void UpdateTime(int64_t new_time) override;
 private:
     void OnDefaultMsg(int msg_id, const BufPtr buffer) override {}
-    void OnDefaultSyncMsg(int msg_id, const BufPtr buffer, std::promise<BufPtr >& ret) override {}
+    BufPtr OnDefaultSyncMsg(int msg_id, const BufPtr buffer) override { return nullptr; }
     // void OnBusRetransBegin(int msg_id, const BufPtr buffer) override {}
     // void OnBusRetransEnd(int msg_id, const BufPtr buffer) override {}
     // void OnStartEpochGenerator(int msg_id, const BufPtr buffer) override;
@@ -39,7 +39,7 @@ private:
     void OnClearAllTimer(int msg_id, const BufPtr buffer) override;
     void OnPauseAllTimer(int msg_id, const BufPtr buffer) override;
     void OnResumeAllTimer(int msg_id, const BufPtr buffer) override;
-    void OnListAllTimer(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) override;
+    BufPtr OnListAllTimer(int msg_id, const BufPtr buffer) override;
     void OnBacktestTimerEvent(int msg_id, const BufPtr buffer);
 
     ServiceMap& m_pool;
