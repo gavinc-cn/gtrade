@@ -9,6 +9,7 @@
 #include <cryptopp/filters.h>
 #include "qry_processor.h"
 #include "i_client_dump.h"
+#include "i_exchange_data.h"   // MarketInfoQryRspHeader
 #include "strategy_engine.h"
 #include "dict_mapping.h"
 #include "tbuffer.h"
@@ -94,13 +95,20 @@ void QueryProcessor::OnQueryMarketInfoReq(int msg_id, const BufPtr buffer) {
     }
 }
 
-void QueryProcessor::OnQueryMarketInfoSync(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) {
-    if (BufPtr send_buf {};
-        OnQueryMarketInfoReqImpl(buffer, send_buf)) {
-        ret.set_value(send_buf);
-    } else {
-        ret.set_value({});
+BufPtr QueryProcessor::OnQueryMarketInfoSync(int msg_id, const BufPtr buffer) {
+    BufPtr send_buf {};
+    const bool ok = OnQueryMarketInfoReqImpl(buffer, send_buf);
+    // 同步链路的 Buffer 表达不了失败（框架会把 nullptr 兜底成非空空响应，调用方还会无条件解引用），
+    // 因此把成败放进响应首部：ok=1 表示查询成功（后面可能跟 0 条 MarketInfo，属合法结果），
+    // ok=0 表示查询失败，由调用方决定重试/跳过 —— 不再用"响应长度是否为 0"表达失败。
+    MarketInfoQryRspHeader header {};
+    header.ok = ok ? 1 : 0;
+    BufPtr rsp_buf = std::make_shared<TBuffer>();
+    rsp_buf->Append(header);
+    if (ok && send_buf && send_buf->GetSize() > 0) {
+        rsp_buf->CopyBuffer(send_buf->Data(), send_buf->GetSize());
     }
+    return rsp_buf;
 }
 
 void QueryProcessor::OnQueryHoldReq(int msg_id, const BufPtr buffer) {

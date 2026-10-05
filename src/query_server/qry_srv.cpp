@@ -93,10 +93,10 @@ void QueryServer::OnHandleQryReq(const int msg_id, const BufPtr buffer) {
     GetQryProcessor()->PostMsg(msg_id, buffer);
 }
 
-void QueryServer::OnHandleSyncQryReq(const int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) {
+BufPtr QueryServer::OnHandleSyncQryReq(const int msg_id, const BufPtr buffer) {
     BufPtr rsp = std::make_shared<TBuffer>();
     GetQryProcessor()->PostSyncMsg(msg_id, buffer, rsp);
-    ret.set_value(rsp);
+    return rsp;
 }
 
 void QueryServer::OnHandleQryRsp(const int msg_id, const BufPtr buffer) {

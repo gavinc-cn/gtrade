@@ -12,6 +12,7 @@
 //   gtrade (主进程) -> 共享内存 WAL -> gtrade_repl -> 文件 WAL + 备机
 //
 
+#include <algorithm>
 #include <csignal>
 #include <iostream>
 #include <thread>
@@ -63,6 +64,15 @@ struct ReplicationMsgHeader {
 };
 #pragma pack(pop)
 static_assert(sizeof(ReplicationMsgHeader) == 28, "ReplicationMsgHeader should be 28 bytes");
+
+// 备机重连退避：首次失败后等待 200ms，之后指数增长，封顶 5s
+// 目的：备机长期不可用时不再每轮循环都发起连接（旧实现无退避，空转烧 CPU）
+static constexpr std::chrono::milliseconds kReconnectBackoffMin{200};
+static constexpr std::chrono::milliseconds kReconnectBackoffMax{5000};
+
+// 空闲轮询间隔：仅当本轮没有待处理 WAL 条目时休眠
+// 无数据时休眠以消除忙等；有数据时立即进入下一轮，不增加复制延迟
+static constexpr std::chrono::milliseconds kIdlePollInterval{2};
 
 class ReplicationProcess {
 public:
@@ -124,21 +134,49 @@ public:
         return true;
     }
 
+    /**
+     * 复制主循环
+     *
+     * 每轮依次：
+     * 1. 备机未连接且已到重试点时发起一次连接（失败按指数退避，避免忙等重连）
+     * 2. 读取并处理共享内存 WAL 中未确认的条目
+     * 3. 本轮无数据时休眠 kIdlePollInterval；有数据立即进入下一轮保复制延迟
+     */
     void Run() {
         LOG_INFO("ReplicationProcess starting, peer={}:{}", peer_addr_, peer_port_);
 
         while (g_running.load()) {
-            // 尝试连接备机（非阻塞）
-            if (!connected_) {
-                TryConnect();
+            const auto now = std::chrono::steady_clock::now();
+
+            // 尝试连接备机（非阻塞）：next_connect_time_ 默认为 epoch，首轮立即尝试；
+            // 失败后按 reconnect_backoff_ 指数退避（200ms 起、5s 封顶），成功后清零
+            if (!connected_ && now >= next_connect_time_) {
+                if (TryConnect()) {
+                    reconnect_backoff_ = kReconnectBackoffMin;
+                    next_connect_time_ = {};
+                } else {
+                    // 仅在退避档位变化时告警，长期不可用按 debug 记录，避免日志刷屏
+                    if (reconnect_backoff_ != kReconnectBackoffMax) {
+                        LOG_WARN("Connect to standby {}:{} failed, retry in {} ms", peer_addr_, peer_port_,
+                                 reconnect_backoff_.count());
+                    } else {
+                        LOG_DEBUG("Connect to standby {}:{} failed, retry in {} ms", peer_addr_, peer_port_,
+                                  reconnect_backoff_.count());
+                    }
+                    next_connect_time_ = now + reconnect_backoff_;
+                    reconnect_backoff_ = std::min(reconnect_backoff_ * 2, kReconnectBackoffMax);
+                }
             }
 
             // 读取并处理 WAL 条目（无论是否连接到备机）
             // 文件 WAL 写入不依赖网络连接
-            ProcessWalEntries();
+            const size_t processed = ProcessWalEntries();
 
-            // 短暂休眠避免忙等
-            std::this_thread::sleep_for(std::chrono::microseconds(100));
+            // 有数据处理时立即进入下一轮，保证复制延迟最小；
+            // 无数据时休眠，替代原先 100µs 的近忙等空转
+            if (processed == 0) {
+                std::this_thread::sleep_for(kIdlePollInterval);
+            }
         }
 
         // 处理剩余的未确认条目
@@ -154,7 +192,15 @@ public:
     }
 
 private:
-    void TryConnect() {
+    /**
+     * 尝试连接备机（非阻塞语义）
+     *
+     * 一次同步 resolve + connect，失败立即返回，不做重试与等待；
+     * 重试节奏由调用方 Run() 按退避时间点控制
+     *
+     * @return true 表示 TCP 建链成功（connected_ 已置位）
+     */
+    bool TryConnect() {
         try {
             boost::asio::ip::tcp::resolver resolver(io_context_);
             auto endpoints = resolver.resolve(peer_addr_, std::to_string(peer_port_));
@@ -164,7 +210,7 @@ private:
 
             if (ec) {
                 LOG_DEBUG("Connect failed: {}", ec.message());
-                return;
+                return false;
             }
 
             // 设置 TCP_NODELAY
@@ -172,8 +218,10 @@ private:
 
             connected_ = true;
             LOG_INFO("Connected to standby: {}:{}", peer_addr_, peer_port_);
+            return true;
         } catch (const std::exception& e) {
             LOG_DEBUG("Connect exception: {}", e.what());
+            return false;
         }
     }
 
@@ -194,14 +242,16 @@ private:
      * 2. 写入本地文件 WAL（持久化）
      * 3. 发送到备机（复制，如果已连接）
      * 4. 确认已处理的条目
+     *
+     * @return 本次处理的条目数，0 表示当前无待处理数据（供调用方决定是否休眠）
      */
-    void ProcessWalEntries() {
+    size_t ProcessWalEntries() {
         // 读取未确认的条目
         std::vector<std::pair<gtrade::WalEntryHeader, std::vector<char>>> entries;
         const size_t count = shm_wal_->ReadUnconfirmed(entries, 100);
 
         if (count == 0) {
-            return;
+            return 0;
         }
 
         size_t processed = 0;
@@ -239,6 +289,8 @@ private:
             shm_wal_->ConfirmBatch(processed);
             LOG_DEBUG("Processed {} WAL entries, last_seq={}", processed, last_sent_seq_);
         }
+
+        return processed;
     }
 
     bool SendWalEntry(const gtrade::WalEntryHeader& wal_header,
@@ -285,6 +337,11 @@ private:
     boost::asio::ip::tcp::socket socket_;
     bool connected_;
     uint64_t last_sent_seq_;
+
+    // 重连退避状态：当前退避间隔 + 下次允许发起重连的时间点
+    // next_connect_time_ 默认 epoch，表示首轮循环立即尝试连接
+    std::chrono::milliseconds reconnect_backoff_{kReconnectBackoffMin};
+    std::chrono::steady_clock::time_point next_connect_time_{};
 };
 
 void SetupSignalHandlers() {

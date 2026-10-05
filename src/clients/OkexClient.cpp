@@ -433,7 +433,8 @@ bool OkexClient::QryHisEntrusts(TBufferPtr& buf, const HisEntrustsQryReq& req) {
     sonic_json::Document d {};
     std::vector<std::string> inst_type_vec {req.inst_type};
     if (zrt::is_empty(req.inst_type)) {
-        inst_type_vec = {k_SPOT, k_MARGIN, k_SWAP, k_FUTURES, k_OPTION};
+        // 兜底清单不含 MARGIN：币币杠杆不是独立品种（复用现货的 instId），本系统不做杠杆交易
+        inst_type_vec = {k_SPOT, k_SWAP, k_FUTURES, k_OPTION};
     }
     try {
         for (const auto& inst_type: inst_type_vec) {

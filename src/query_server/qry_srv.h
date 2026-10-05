@@ -33,7 +33,7 @@ public:
     bool Start() override;
     std::unique_ptr<QueryProcessor>& GetQryProcessor();
     void OnHandleQryReq(int msg_id, const BufPtr buffer);
-    void OnHandleSyncQryReq(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret);
+    BufPtr OnHandleSyncQryReq(int msg_id, const BufPtr buffer);
     void OnHandleQryRsp(int msg_id, const BufPtr buffer);
     template<int MsgId, typename T>
     void OnHandleQryError(int msg_id, const BufPtr buffer);

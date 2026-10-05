@@ -42,7 +42,7 @@ public:
     void OnHandleEntrustQryReq(int msg_id, const BufPtr buffer);
     void OnHandleHisEntrustQryReq(int msg_id, const BufPtr buffer);
 
-    void OnQueryMarketInfoSync(int msg_id, BufPtr buffer, std::promise<BufPtr>& ret);
+    BufPtr OnQueryMarketInfoSync(int msg_id, BufPtr buffer);
 private:
     QueryServer& m_qry_srv;
     GTradeConfig m_gtrade_cfg {};

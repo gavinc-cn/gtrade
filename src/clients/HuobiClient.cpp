@@ -21,6 +21,11 @@ HuobiClient::HuobiClient(const std::string &apiKey, const std::string &apiSecret
 m_api_key(apiKey),
 m_api_secret(apiSecret)
 {
+    m_api_key = apiKey;
+    m_api_secret = apiSecret;
+    cout << m_api_key << endl;
+    cout << m_api_secret << endl;
+
 }
 
 std::string HuobiClient::getExSymbol(const std::string &symbol) {
