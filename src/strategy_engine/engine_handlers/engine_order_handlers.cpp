@@ -9,6 +9,34 @@
 #include "define.h"
 #include "i_client_dump.h"
 
+BufPtr StrategyEngine::OnHttpQueryOrders(int msg_id, const BufPtr buffer) {
+    // 补查委托（web_server 断线重连后调用）：读引擎内存权威态，不查库。
+    // 两种模式：① by_entnos（客户端已知在途委托号，含终态）② entno 游标（发现离线期间新增）。
+    // 响应 = 若干条 Order 记录；空响应表示没有更多数据（异常另外记 ERROR）。
+    const auto& req = buffer->RefData<HttpQueryOrdersReq>();
+    BufPtr rsp_buf = std::make_shared<TBuffer>();
+
+    const int limit = (req.limit > 0) ? std::min(req.limit, kQueryMaxRows) : kQueryDefaultRows;
+    if (req.entno_cnt < 0 || req.entno_cnt > kQueryMaxEntnos) {
+        SPDLOG_ERROR("query orders: invalid entno_cnt={} (max={})", req.entno_cnt, kQueryMaxEntnos);
+        return rsp_buf;
+    }
+
+    std::vector<Order> orders {};
+    if (req.entno_cnt > 0) {
+        orders = m_order_manager.QueryOrdersByEntnos(req.entnos, static_cast<size_t>(req.entno_cnt));
+        SPDLOG_INFO("query orders by entnos: asked={}, found={}", req.entno_cnt, orders.size());
+    } else {
+        orders = m_order_manager.QueryOrdersAfter(req.cursor_entno, static_cast<size_t>(limit));
+        SPDLOG_INFO("query orders after entno={}: returned={} (limit={})", req.cursor_entno, orders.size(), limit);
+    }
+
+    for (const Order& order : orders) {
+        rsp_buf->Append(order);
+    }
+    return rsp_buf;
+}
+
 void StrategyEngine::OnQueryOrderRsp(int msg_id, const BufPtr buffer) {
     using RecvData = Order;
     const auto* recv_data_ptr = reinterpret_cast<const RecvData*>(buffer->Data());

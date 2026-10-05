@@ -138,7 +138,7 @@ void TimerManagerDummy::OnResumeAllTimer(int msg_id, const BufPtr buffer) {
     // }
 }
 
-void TimerManagerDummy::OnListAllTimer(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret)
+BufPtr TimerManagerDummy::OnListAllTimer(int msg_id, const BufPtr buffer)
 {
     SPDLOG_INFO("{}", msg_id);
     TBufferPtr buf = std::make_shared<TBuffer>();
@@ -153,7 +153,7 @@ void TimerManagerDummy::OnListAllTimer(int msg_id, const BufPtr buffer, std::pro
         // zrt::fill_field(key.timer_id, p.second.timer_id);
         // buf->Append(key);
     // }
-    ret.set_value(buf);
+    return buf;
 }
 
 void TimerManagerDummy::OnBacktestTimerEvent(int msg_id, const BufPtr buffer) {

@@ -14,13 +14,33 @@
 #include "i_timer_manager_dump.h"
 #include "okx_trade.h"
 #include "dummy_trade.h"
+#include "ctp_trader.h"   // CTP 交易网关（每账户一个）
+#ifdef GTRADE_ENABLE_DPDK_PROBE
+#include "latency_probe/dpdk_trade_sink.h"  // DPDK 延时探测交易出口（平级 OkxTrade）
+#endif
 #include "global.h"
 #include "my_utc.h"
 #include "OkexClient.h"
 #include "strategy_zmq_channel.h"
+#include "zrtools/latency/latency_tracer.h"  // 延时测试打点宏（未启用时编译为空）
 
 // 策略通过自注册工厂加载，无需在此 include 各策略头文件
 #include "strategy_factory.h"
+
+namespace {
+// tdMode → 一个"优先尝试"的 instType（OKX 风格）。只用于给行情缓存查询一个偏好，不是过滤器：
+// tdMode 对现货表示"现货(cash) vs 币币杠杆(cross/isolated)"，对永续/交割表示的是**合约保证金
+// 模式**，所以合约单带 isolated 时这里推出来的是 MARGIN，与该 instId 实际登记的 SWAP 不符 ——
+// FindMarketInfo 未精确命中会按优先级回落到该 instId 的任一条，结果仍正确。
+std::string InstTypeFromTdMode(const char td_mode) {
+    switch (td_mode) {
+        case TradeMode::Cash: return std::string(k_SPOT);
+        case TradeMode::Cross:
+        case TradeMode::Isolated: return std::string(k_MARGIN);
+        default: return {};
+    }
+}
+}   // namespace
 
 bool StrategyEngine::Init() {
     SPDLOG_INFO("{}", __PRETTY_FUNCTION__ );
@@ -34,6 +54,15 @@ bool StrategyEngine::Init() {
     m_mysql_gateway = m_pool.at(k_MySqlGateway).get();
 
     m_kline_manager = std::make_unique<KLineManager>(m_gtrade_cfg, *this, dynamic_cast<QueryServer &>(*m_qry_srv));
+
+    // 推送出口（引擎 → web_server）：配置启用才建连接；查询回调把 web_server 的补查请求
+    // 投到引擎线程执行（PostSyncMsg），因此补查结果与推送事件在引擎侧天然同序。
+    m_event_publisher.Init(m_gtrade_cfg.engine_push);
+    m_event_publisher.SetQueryHandler([this](const int msg_id, const BufPtr& req) -> BufPtr {
+        BufPtr rsp {};
+        PostSyncMsg(msg_id, req, rsp);
+        return rsp;
+    });
     
     // 事件源管理器只在回测模式下初始化
     if constexpr (!GlobalConst::IsRealTrading) {
@@ -63,6 +92,9 @@ bool StrategyEngine::Init() {
     ZRT_ADD_HANDLER(kTradePush, StrategyEngine::OnTradePush);
     ZRT_ADD_HANDLER(kPositionPush, StrategyEngine::OnPosPush);
     ZRT_ADD_HANDLER(kBalancePush, StrategyEngine::OnBalancePush);
+    // 补查（web_server → 引擎，同步：调用方阻塞等结果）
+    ZRT_ADD_SYNC_HANDLER(kHttpQueryOrdersReq, StrategyEngine::OnHttpQueryOrders);
+    ZRT_ADD_SYNC_HANDLER(kHttpQueryTradesReq, StrategyEngine::OnHttpQueryTrades);
     // 策略查询
     ZRT_ADD_HANDLER(kQueryKLineReq, StrategyEngine::OnQueryKLineReq);
     ZRT_ADD_HANDLER(kQueryOrderReq, StrategyEngine::OnHandleQueryServerReq);
@@ -131,6 +163,15 @@ bool StrategyEngine::Init() {
     // HTTP系统管理
     ZRT_ADD_SYNC_HANDLER(kHttpSaveSnapshot, StrategyEngine::OnHttpSaveSnapshot);
     ZRT_ADD_SYNC_HANDLER(kHttpGetWalStats, StrategyEngine::OnHttpGetWalStats);
+#ifdef GTRADE_ENABLE_HTTP_TRADE
+    ZRT_ADD_SYNC_HANDLER(kHttpPlaceOrder, StrategyEngine::OnHttpPlaceOrder);
+    ZRT_ADD_SYNC_HANDLER(kHttpCancelOrder, StrategyEngine::OnHttpCancelOrder);
+#endif  // GTRADE_ENABLE_HTTP_TRADE
+    ZRT_ADD_SYNC_HANDLER(kHttpGetDepth, StrategyEngine::OnHttpGetDepth);
+    // 标的范围订阅（web 设置页）
+    ZRT_ADD_SYNC_HANDLER(kHttpQueryInstruments, StrategyEngine::OnHttpQueryInstruments);
+    ZRT_ADD_SYNC_HANDLER(kHttpGetInstrumentScope, StrategyEngine::OnHttpGetInstrumentScope);
+    ZRT_ADD_SYNC_HANDLER(kHttpSetInstrumentScope, StrategyEngine::OnHttpSetInstrumentScope);
 
     return true;
 }
@@ -173,10 +214,15 @@ void StrategyEngine::LoadRecentOrdersFromDb() {
     BufPtr rsp_buf {};
     m_mysql_gateway->PostSyncMsg(kDbQueryHisOrdersReq, std::make_shared<TBuffer>(req), rsp_buf);
 
-    rsp_buf->ForEach<Order>([this](const Order& entrust) {
-        SPDLOG_DEBUG("Received entrust from DB: entno={}, private_no={}, policy_no={}, status={}", entrust.entno, entrust.private_no, entrust.policy_no, entrust.status);
-        m_order_manager.RecoverOrder(entrust);
-    });
+    // 判空：MySQL 不可用时 handler 返回空响应，避免空指针解引用
+    if (rsp_buf) {
+        rsp_buf->ForEach<Order>([this](const Order& entrust) {
+            SPDLOG_DEBUG("Received entrust from DB: entno={}, private_no={}, policy_no={}, status={}", entrust.entno, entrust.private_no, entrust.policy_no, entrust.status);
+            m_order_manager.RecoverOrder(entrust);
+        });
+    } else {
+        SPDLOG_WARN("Empty response for recent entrusts query, skip order recovery");
+    }
     SPDLOG_INFO("Loaded {} historical entrusts from database", m_order_manager.GetOrderCount());
 
     // 叠加共享内存中的数据（最新的未确认数据）
@@ -189,6 +235,31 @@ void StrategyEngine::LoadRecentOrdersFromDb() {
     SPDLOG_INFO("Persistence stats - Done: write_seq={}, confirmed_seq={}, unconfirmed={}",
                 stats.trade_write_seq, stats.trade_confirmed_seq, stats.trade_unconfirmed);
     SPDLOG_INFO("Historical entrust loading completed, total entrusts in m_order_manager: {}", m_order_manager.GetOrderCount());
+
+    // 设置号段基数（启动高水位）：保证新生成的 entno/tdno 不与历史号重叠，
+    // 即使"同一秒内重启"也不会与前一次运行的号段撞车（订单 REPLACE 覆盖、成交主键冲突）。
+    SetupIdBaseFromDb();
+}
+
+void StrategyEngine::SetupIdBaseFromDb() {
+    // 取 DB 里的历史最大号（order/trade 主键即 entno/tdno，MAX 走主键末行）
+    BufPtr max_rsp {};
+    m_mysql_gateway->PostSyncMsg(kDbQueryMaxIdsReq, std::make_shared<TBuffer>(), max_rsp);
+    int64_t db_max_entno = 0;
+    int64_t db_max_tdno = 0;
+    if (max_rsp && max_rsp->GetSize() > 0) {
+        const auto& rsp = max_rsp->RefData<MaxIdsQryRsp>();
+        db_max_entno = rsp.max_entno;
+        db_max_tdno = rsp.max_tdno;
+    } else {
+        // MySQL 不可用：退回时间基数（由 SetIdBase 兜底），仅记警告不阻塞启动
+        SPDLOG_WARN("max ids query unavailable, fall back to time-based id base");
+    }
+
+    // 再把内存里已恢复的（含 SHM 叠加的未确认数据）算进来，取三者上界
+    const int64_t mem_max_entno = m_order_manager.GetMaxOrderNo();
+    const int64_t mem_max_tdno = m_order_manager.GetMaxTradeNo();
+    m_order_manager.SetIdBase(std::max(db_max_entno, mem_max_entno), std::max(db_max_tdno, mem_max_tdno));
 }
 
 bool StrategyEngine::Start() {
@@ -224,6 +295,7 @@ bool StrategyEngine::Start() {
     else {
         LoadRecentOrdersFromDb();
         RefreshAllMarketInfo(true);
+        LoadInstrumentScopeFromDb();   // 从 DB 恢复标的范围订阅（策略启动前）
     }
 
     // 启动策略 - 策略启动时可能会立即订阅事件源
@@ -259,11 +331,15 @@ bool StrategyEngine::Start() {
         SPDLOG_INFO("Backtest completed via EventSourceManager");
         GlobalControl::is_running = false;
     }
+    // 启动推送出口（配置 enabled=false 时内部直接返回；连接失败只在日志里体现，不影响交易）
+    m_event_publisher.Start();
     return true;
 }
 
 void StrategyEngine::Stop() {
     SPDLOG_INFO("stopping all strategies");
+    // 先停推送出口：避免策略停止过程中仍在向 web_server 发事件
+    m_event_publisher.Stop();
     for (const auto& [strat_id, strat_ptr] : m_strategy_proxy_map) {
         strat_ptr->Stop();
         SPDLOG_INFO("strat={} stopped", strat_id);
@@ -274,9 +350,10 @@ void StrategyEngine::OnDefaultMsg(int msg_id, const BufPtr buffer) {
     SPDLOG_INFO("{}", msg_id);
 }
 
-void StrategyEngine::OnDefaultSyncMsg(int msg_id, const BufPtr buffer, std::promise<BufPtr >& ret) {
+BufPtr StrategyEngine::OnDefaultSyncMsg(int msg_id, const BufPtr buffer) {
     SPDLOG_INFO("{}", msg_id);
-    // ret.set_value(__FUNCTION__ );
+    // default handler：未注册的同步消息走到这里，返回 nullptr 由框架兜底兑现空响应并打 ERROR
+    return nullptr;
 }
 
 std::shared_ptr<StrategyBase> StrategyEngine::LoadStrategyFromSo(
@@ -569,6 +646,10 @@ void StrategyEngine::OnSubscribeQuote(int msg_id, const BufPtr buffer) {
         else if (zrt::equal(quote_sub.market, k_okx_dummy)) {
             m_pool.at(k_OkxDummyQuote)->PostMsg(kStratSubscribeQuote, buffer);
         }
+        else if (zrt::equal(quote_sub.market, k_ctp)) {
+            // CTP 行情订阅转给 CtpMd 服务（ServiceMap 中的 k_CtpQuote）
+            m_pool.at(k_CtpQuote)->PostMsg(kStratSubscribeQuote, buffer);
+        }
         else {
             SPDLOG_ERROR("market={} not supported", quote_sub.market);
         }
@@ -589,7 +670,25 @@ bool StrategyEngine::EnsureTradeGateway(const std::string& market, const std::st
                 m_trade_gw_map.at(account_id)->Init();
                 m_trade_gw_map.at(account_id)->Start();
                 SPDLOG_INFO("create trade_gateway {} for market={}", account_id, market);
-            } else {
+            }
+            else if (zrt::equal(market, k_ctp)) {
+                // CTP 交易网关：每账户一个 CtpTrader，凭证取自 account.extra
+                m_trade_gw_map.emplace(account_id, std::make_shared<CtpTrader>(m_gtrade_cfg, account_id, this));
+                m_trade_gw_map.at(account_id)->Init();
+                m_trade_gw_map.at(account_id)->Start();
+                SPDLOG_INFO("create trade_gateway {} for market={}", account_id, market);
+            }
+#ifdef GTRADE_ENABLE_DPDK_PROBE
+            else if (zrt::equal(market, k_dpdk_bench)) {
+                // DPDK 延时探测交易出口（平级 OkxTrade）：rte_eth_tx_burst 上线 + wire2wire 打点。
+                // 须在 DpdkQuoteSource.Start()（EAL/端口）之后创建——EnsureTradeGateway 首单时行情源已起。
+                m_trade_gw_map.emplace(account_id, std::make_shared<DpdkTradeSink>(m_gtrade_cfg, account_id, *this));
+                m_trade_gw_map.at(account_id)->Init();
+                m_trade_gw_map.at(account_id)->Start();
+                SPDLOG_INFO("create trade_gateway {} for market={}", account_id, market);
+            }
+#endif
+            else {
                 SPDLOG_ERROR("market={} not supported", market);
                 return false;
             }
@@ -682,6 +781,7 @@ void StrategyEngine::FillNewEntByReq(Order& dst, const OrderReq& src) {
     zrt::fill_field(dst.amount, src.amount);
     zrt::fill_field(dst.expire_time, src.expire_time);
     zrt::fill_field(dst.ent_time, src.ent_time);
+    zrt::fill_field(dst.quote_monotonic, src.quote_monotonic);  // 延时 T0 贯穿：OrderReq.quote_monotonic → Order，供下游 OkxTrade tick2order / DpdkTradeSink wire2wire
     zrt::fill_field(dst.fmt_time, MyUTC(dst.ent_time, 19).GetYmdHMS());
     // 特殊处理
     zrt::fill_field(dst.entno, OrderManager::CreateOrderId());
@@ -820,7 +920,7 @@ bool StrategyEngine::FillSide(Order& order) {
 void StrategyEngine::OnPlaceOrderReq(int msg_id, const BufPtr buffer) {
     const auto& recv_data = buffer->RefData<OrderReq>();
 #ifdef GTRADE_ENABLE_LATENCY_TEST
-    SPDLOG_TRACE("[TT] engine_ent_in={}us", (zrt::get_monotonic19() - recv_data.quote_monotonic) / 1000);
+    LATENCY_SPAN_FROM("engine_ent_recv", recv_data.quote_monotonic);  // 原 [TT] engine_ent_in
 #endif
     SPDLOG_INFO("EntrustReq={}", zrt::to_str(recv_data));
 
@@ -873,7 +973,7 @@ void StrategyEngine::OnPlaceOrderReq(int msg_id, const BufPtr buffer) {
             zrt::fill_field(entrust->status, OrderStatus::_1);
             m_trade_gw_map.at(account_id)->PostMsg(kPlaceOrder, std::make_shared<TBuffer>(*entrust));
 #ifdef GTRADE_ENABLE_LATENCY_TEST
-            SPDLOG_TRACE("[TT] engine_ent_out={}us", (zrt::get_monotonic19() - new_entrust.quote_monotonic) / 1000);
+            LATENCY_SPAN_FROM("engine_ent_done", new_entrust.quote_monotonic);  // 原 [TT] engine_ent_out
 #endif
         } else {
             constexpr std::string_view err_msg = "create trade gateway failed";
@@ -926,6 +1026,10 @@ void StrategyEngine::OnCancelOrderRsp(int msg_id, const BufPtr buffer) {
 
 void StrategyEngine::OnPlaceOrderConfirm(int msg_id, const BufPtr buffer) {
     const auto& recv_data = buffer->RefData<Order>();
+#ifdef GTRADE_ENABLE_LATENCY_TEST
+    // L9 订单 ack 往返：按 entno 反查发出时刻并作差
+    zrt::LatencyCorrelator::Instance().OnAck(recv_data.entno);
+#endif
     SPDLOG_INFO("received order: {}", zrt::to_str(recv_data));
     Order* entrust = m_order_manager.FindLocalOrder(recv_data);
     if (ZRT_UNLIKELY(!entrust)) {
@@ -967,6 +1071,8 @@ void StrategyEngine::OnPlaceOrderConfirm(int msg_id, const BufPtr buffer) {
     SPDLOG_INFO("updated order: {}", zrt::to_str(*entrust));
     m_order_manager.SaveOrder2Shm(*entrust);
     m_order_manager.SetUp2date(entrust->account_id, entrust->entno);
+    // 推送出口：委托状态变化（无订阅者时内部立刻返回，零开销）
+    m_event_publisher.PublishOrder(*entrust);
 
     // 记录private_no到entno的映射
     if (!zrt::is_empty(entrust->private_no) && !zrt::is_empty(entrust->policy_no)) {
@@ -1125,6 +1231,7 @@ void StrategyEngine::CreateTrade(const Order& local_order, const Order& recv_ord
 
     SPDLOG_INFO("{}", zrt::to_str(trade));
     m_order_manager.AddTrade(trade);
+    m_event_publisher.PublishTrade(trade);
 
     const auto buffer = std::make_shared<TBuffer>(trade);
 
@@ -1140,11 +1247,56 @@ void StrategyEngine::CreateTrade(const Order& local_order, const Order& recv_ord
     }
 }
 
+void StrategyEngine::FillTradeLocalFields(Trade& trade) {
+    // 交易所成交回报（CTP）只带交易所字段，缺 tdno/ordno/策略号/组合等本地字段；
+    // 缺 tdno 的成交会被 OrderManager::AddTrade 直接丢弃（见工单），故这里先补齐再入库。
+    // 定位本地委托：优先用 ordno（CtpTrader 由 OrderRef 反查得到，O(1)），
+    // 拿不到再用 private_no 兜底扫描（例如引擎重启后 OrderRef 映射已丢失）。
+    Order* local = trade.ordno ? m_order_manager.FindLocalOrder(trade.ordno) : nullptr;
+    if (local == nullptr && !zrt::is_empty(trade.private_no)) {
+        local = m_order_manager.FindLocalOrderByPrivateNo(trade.private_no);
+    }
+
+    // 成交号无论如何都要给：否则这笔成交会被静默丢弃，既不落库也推不到前端
+    zrt::fill_field(trade.tdno, OrderManager::CreateTradeId());
+
+    if (ZRT_UNLIKELY(local == nullptr)) {
+        SPDLOG_WARN("external trade cannot link to local order: ordno={}, private_no={}, assigned tdno={}",
+                    trade.ordno, trade.private_no, trade.tdno);
+        return;
+    }
+
+    zrt::fill_field(trade.ordno, local->entno);
+    zrt::fill_field(trade.strat_id, local->policy_no);
+    zrt::fill_field(trade.portfolio, local->portfolio);
+    zrt::fill_field(trade.px_type, local->price_type);
+    zrt::fill_field(trade.margin_mode, local->trade_mode);
+    zrt::fill_field(trade.ord_status_id, local->status_id);
+    if (zrt::is_empty(trade.private_no)) {
+        zrt::fill_field(trade.private_no, local->private_no);
+    }
+    SPDLOG_INFO("external trade linked to local order: entno={}, strat={}, tdno={}",
+                local->entno, local->policy_no, trade.tdno);
+}
+
 void StrategyEngine::OnTradePush(int msg_id, const BufPtr buffer) {
     const auto& recv_data = *reinterpret_cast<const Trade*>(buffer->Data());
+#ifdef GTRADE_ENABLE_LATENCY_TEST
+    // L10 成交往返：Trade.ordno 即本地委托号（等于发出时 RecordSend 记录的 entno），反查作差
+    zrt::LatencyCorrelator::Instance().OnFill(recv_data.ordno);
+#endif
     SPDLOG_INFO("{}", zrt::to_str(recv_data));
 
-    m_order_manager.AddTrade(recv_data);
+    // 缺本地字段的成交（CTP 回报）先补齐；补齐后转发给策略的也是补齐版（副本，不改调用方的 buffer）
+    Trade trade = recv_data;
+    BufPtr push_buffer = buffer;
+    if (ZRT_UNLIKELY(!trade.tdno)) {
+        FillTradeLocalFields(trade);
+        push_buffer = std::make_shared<TBuffer>(trade);
+    }
+
+    m_order_manager.AddTrade(trade);
+    m_event_publisher.PublishTrade(trade);
 
     // // 转发成交数据到数据库（仅实盘模式）
     // // 注意：现在主要通过共享内存持久化，这里的直接发送作为备用
@@ -1152,9 +1304,9 @@ void StrategyEngine::OnTradePush(int msg_id, const BufPtr buffer) {
     //     m_mysql_gateway->PostMsg(kDbSetTrade, buffer);
     // }
 
-    for (const auto& strat_id: m_trade_sub_map[recv_data.account_id][recv_data.instrument]) {
-        SendToStrategy(kTradePush, buffer, strat_id);
-        SendToStrategy(kPortfolioPosPush, std::make_shared<TBuffer>(m_order_manager.GetPortfolioPos(recv_data)), strat_id);
+    for (const auto& strat_id: m_trade_sub_map[trade.account_id][trade.instrument]) {
+        SendToStrategy(kTradePush, push_buffer, strat_id);
+        SendToStrategy(kPortfolioPosPush, std::make_shared<TBuffer>(m_order_manager.GetPortfolioPos(trade)), strat_id);
     }
 }
 
@@ -1162,6 +1314,7 @@ void StrategyEngine::OnPosPush(int msg_id, const BufPtr buffer) {
     const auto& recv_data = *reinterpret_cast<const Position*>(buffer->Data());
     SPDLOG_INFO("{}", zrt::to_str(recv_data));
     m_order_manager.UpdatePos(recv_data);
+    m_event_publisher.PublishPosition(recv_data);
     for (const auto& strat_id: m_trade_sub_map[recv_data.account_id][recv_data.instrument]) {
         const auto iter = m_strategy_proxy_map.find(strat_id);
         if (iter != m_strategy_proxy_map.end()) {
@@ -1176,6 +1329,7 @@ void StrategyEngine::OnBalancePush(int msg_id, const BufPtr buffer) {
     const auto& recv_data = *reinterpret_cast<const Balance*>(buffer->Data());
     SPDLOG_INFO("{}", zrt::to_str(recv_data));
     m_order_manager.UpdateBalance(recv_data);
+    m_event_publisher.PublishBalance(recv_data);
     std::unordered_set<std::string> already_sent {};
     for (const auto& inst_map_pair: m_trade_sub_map[recv_data.account_id]) {
         for (const auto& strat_id: inst_map_pair.second) {
@@ -1196,7 +1350,7 @@ void StrategyEngine::OnBalancePush(int msg_id, const BufPtr buffer) {
 void StrategyEngine::OnDepth1(int msg_id, const BufPtr buffer) {
     const auto depth = *reinterpret_cast<const Depth*>(buffer->Data());
 #ifdef GTRADE_ENABLE_LATENCY_TEST
-    SPDLOG_TRACE("[TT] engine_quote_in={}us", (zrt::get_monotonic19() - depth.monotonic) / 1000);
+    LATENCY_SPAN_FROM("engine_recv", depth.monotonic);  // 原 [TT] engine_quote_in
 #endif
     SPDLOG_TRACE("market={} symbol={} datetime={} sub_cnt={}", depth.market, depth.symbol, depth.datetime, m_quote_sub_map.size());
 
@@ -1204,9 +1358,13 @@ void StrategyEngine::OnDepth1(int msg_id, const BufPtr buffer) {
         m_trade_gw_map.at(k_DummyTrade)->PostMsg(MsgId::kDepth1, buffer);
     }
 
-    SendToSubedStrategies(MsgId::kDepth1, buffer, m_quote_sub_map[{k_depth1, depth.market, depth.symbol}]);
+    // find 而非 operator[]：无订阅者的标的（如退订后的在途行情）不得造出空幽灵条目，干扰 owner 计数与清理判定
+    if (const auto sub_iter = m_quote_sub_map.find({k_depth1, depth.market, depth.symbol});
+        sub_iter != m_quote_sub_map.end()) {
+        SendToSubedStrategies(MsgId::kDepth1, buffer, sub_iter->second);
+    }
 #ifdef GTRADE_ENABLE_LATENCY_TEST
-    SPDLOG_TRACE("[TT] engine_quote_out={}us", (zrt::get_monotonic19() - depth.monotonic) / 1000);
+    LATENCY_SPAN_FROM("engine_dispatch", depth.monotonic);  // 原 [TT] engine_quote_out
 #endif
 
     // 保存最新价格（用于定时器周期性更新策略持仓未实现盈亏）
@@ -1214,6 +1372,12 @@ void StrategyEngine::OnDepth1(int msg_id, const BufPtr buffer) {
         const double last_price = (depth.bid_price[0] + depth.ask_price[0]) / 2.0;
         m_last_price_map[depth.market][depth.symbol] = last_price;
     }
+
+    // 推送出口（quote 通道）：按标的限频后投递给 web_server；无订阅者时内部立刻返回
+    m_event_publisher.PublishDepth(depth);
+
+    // 缓存最新 Depth 快照供 HTTP/MCP get_depth 读取
+    m_depth_cache[std::string(depth.market)][std::string(depth.symbol)] = depth;
 }
 
 void StrategyEngine::OnWebSocketOpenNotify(int msg_id, const BufPtr buffer) {
@@ -1321,6 +1485,8 @@ bool StrategyEngine::DeleteStrategy(const std::string& strat_id) {
 
         // 停止策略（Stop() 内部同步投递到策略线程，IStrategyProxy 统一接口）
         strategy->Stop();
+        // 清理该策略的行情订阅 owner（无其它 owner 时才真正退订）
+        CleanupQuoteSubsOfOwner(strat_id);
         SPDLOG_INFO("strategy={} stopped", strat_id);
 
         // 从模板映射中删除
@@ -1377,6 +1543,8 @@ bool StrategyEngine::RestartStrategy(const std::string& strat_id) {
     const auto& strategy = m_strategy_proxy_map.at(strat_id);
     // 停止策略（Stop() 内部同步投递到策略线程执行）
     strategy->Stop();
+    // 清理该策略的行情订阅 owner（与 StopStrategy 一致；无其它 owner 时才真正退订）
+    CleanupQuoteSubsOfOwner(strat_id);
     SPDLOG_INFO("strategy={} stopped", strat_id);
 
     // 启动策略。Start() 内部会同步投递到策略线程执行。
@@ -1419,6 +1587,8 @@ bool StrategyEngine::StopStrategy(const std::string& strat_id) {
 
     // Stop() 内部同步投递到策略线程执行，避免与 OnTick/OnOrder 并发访问策略状态
     iter->second->Stop();
+    // 清理该策略的行情订阅 owner（无其它 owner 时才真正退订）
+    CleanupQuoteSubsOfOwner(strat_id);
 
     SPDLOG_INFO("strategy={} stopped successfully", strat_id);
     return true;
@@ -1589,7 +1759,7 @@ std::string StrategyEngine::GetTemplateConfig(const std::string& template_name) 
 }
 
 // HTTP策略管理同步消息处理函数
-void StrategyEngine::OnHttpAddStrategy(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) {
+BufPtr StrategyEngine::OnHttpAddStrategy(int msg_id, const BufPtr buffer) {
     const auto& req = *reinterpret_cast<const HttpAddStrategyReq*>(buffer->Data());
     std::string cfg_path(req.config_path);
 
@@ -1599,11 +1769,10 @@ void StrategyEngine::OnHttpAddStrategy(int msg_id, const BufPtr buffer, std::pro
 
     HttpStrategyOperationRsp rsp{};
     rsp.success = success;
-    auto rsp_buf = std::make_shared<TBuffer>(rsp);
-    ret.set_value(rsp_buf);
+    return std::make_shared<TBuffer>(rsp);
 }
 
-void StrategyEngine::OnHttpDeleteStrategy(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) {
+BufPtr StrategyEngine::OnHttpDeleteStrategy(int msg_id, const BufPtr buffer) {
     const auto& req = *reinterpret_cast<const HttpDeleteStrategyReq*>(buffer->Data());
     std::string strat_id(req.strat_id);
 
@@ -1613,11 +1782,10 @@ void StrategyEngine::OnHttpDeleteStrategy(int msg_id, const BufPtr buffer, std::
 
     HttpStrategyOperationRsp rsp{};
     rsp.success = success;
-    auto rsp_buf = std::make_shared<TBuffer>(rsp);
-    ret.set_value(rsp_buf);
+    return std::make_shared<TBuffer>(rsp);
 }
 
-void StrategyEngine::OnHttpRestartStrategy(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) {
+BufPtr StrategyEngine::OnHttpRestartStrategy(int msg_id, const BufPtr buffer) {
     const auto& req = *reinterpret_cast<const HttpRestartStrategyReq*>(buffer->Data());
     std::string strat_id(req.strat_id);
 
@@ -1627,11 +1795,10 @@ void StrategyEngine::OnHttpRestartStrategy(int msg_id, const BufPtr buffer, std:
 
     HttpStrategyOperationRsp rsp{};
     rsp.success = success;
-    auto rsp_buf = std::make_shared<TBuffer>(rsp);
-    ret.set_value(rsp_buf);
+    return std::make_shared<TBuffer>(rsp);
 }
 
-void StrategyEngine::OnHttpStartStrategy(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) {
+BufPtr StrategyEngine::OnHttpStartStrategy(int msg_id, const BufPtr buffer) {
     const auto& req = *reinterpret_cast<const HttpStartStrategyReq*>(buffer->Data());
     std::string strat_id(req.strat_id);
 
@@ -1641,11 +1808,10 @@ void StrategyEngine::OnHttpStartStrategy(int msg_id, const BufPtr buffer, std::p
 
     HttpStrategyOperationRsp rsp{};
     rsp.success = success;
-    auto rsp_buf = std::make_shared<TBuffer>(rsp);
-    ret.set_value(rsp_buf);
+    return std::make_shared<TBuffer>(rsp);
 }
 
-void StrategyEngine::OnHttpStopStrategy(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) {
+BufPtr StrategyEngine::OnHttpStopStrategy(int msg_id, const BufPtr buffer) {
     const auto& req = *reinterpret_cast<const HttpStopStrategyReq*>(buffer->Data());
     std::string strat_id(req.strat_id);
 
@@ -1655,22 +1821,20 @@ void StrategyEngine::OnHttpStopStrategy(int msg_id, const BufPtr buffer, std::pr
 
     HttpStrategyOperationRsp rsp{};
     rsp.success = success;
-    auto rsp_buf = std::make_shared<TBuffer>(rsp);
-    ret.set_value(rsp_buf);
+    return std::make_shared<TBuffer>(rsp);
 }
 
-void StrategyEngine::OnHttpQueryAllStrategies(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) {
+BufPtr StrategyEngine::OnHttpQueryAllStrategies(int msg_id, const BufPtr buffer) {
     SPDLOG_INFO("OnHttpQueryAllStrategies");
 
     std::string result = QueryAllStrategies();
 
     HttpQueryRsp rsp{};
     zrt::fill_field(rsp.response, result);
-    auto rsp_buf = std::make_shared<TBuffer>(rsp);
-    ret.set_value(rsp_buf);
+    return std::make_shared<TBuffer>(rsp);
 }
 
-void StrategyEngine::OnHttpQueryStrategiesByTemplate(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) {
+BufPtr StrategyEngine::OnHttpQueryStrategiesByTemplate(int msg_id, const BufPtr buffer) {
     const auto& req = *reinterpret_cast<const HttpQueryStrategiesByTemplateReq*>(buffer->Data());
     const std::string template_name(req.template_name);
 
@@ -1680,11 +1844,10 @@ void StrategyEngine::OnHttpQueryStrategiesByTemplate(int msg_id, const BufPtr bu
 
     HttpQueryRsp rsp {};
     zrt::fill_field(rsp.response, result);
-    const auto rsp_buf = std::make_shared<TBuffer>(rsp);
-    ret.set_value(rsp_buf);
+    return std::make_shared<TBuffer>(rsp);
 }
 
-void StrategyEngine::OnHttpGetTemplates(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) {
+BufPtr StrategyEngine::OnHttpGetTemplates(int msg_id, const BufPtr buffer) {
     SPDLOG_INFO("OnHttpGetTemplates");
 
     std::vector<std::string> templates = GetAllStrategyTemplates();
@@ -1706,11 +1869,10 @@ void StrategyEngine::OnHttpGetTemplates(int msg_id, const BufPtr buffer, std::pr
 
     HttpQueryRsp rsp{};
     zrt::fill_field(rsp.response, std::string(buffer_json.GetString()));
-    auto rsp_buf = std::make_shared<TBuffer>(rsp);
-    ret.set_value(rsp_buf);
+    return std::make_shared<TBuffer>(rsp);
 }
 
-void StrategyEngine::OnHttpGetTemplateConfig(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) {
+BufPtr StrategyEngine::OnHttpGetTemplateConfig(int msg_id, const BufPtr buffer) {
     const auto& req = *reinterpret_cast<const HttpGetTemplateConfigReq*>(buffer->Data());
     std::string template_name(req.template_name);
 
@@ -1720,8 +1882,7 @@ void StrategyEngine::OnHttpGetTemplateConfig(int msg_id, const BufPtr buffer, st
 
     HttpQueryRsp rsp{};
     zrt::fill_field(rsp.response, result);
-    auto rsp_buf = std::make_shared<TBuffer>(rsp);
-    ret.set_value(rsp_buf);
+    return std::make_shared<TBuffer>(rsp);
 }
 
 /**
@@ -1731,7 +1892,7 @@ void StrategyEngine::OnHttpGetTemplateConfig(int msg_id, const BufPtr buffer, st
  * @param buffer 请求缓冲区（空）
  * @param ret 响应promise
  */
-void StrategyEngine::OnHttpSaveSnapshot(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) {
+BufPtr StrategyEngine::OnHttpSaveSnapshot(int msg_id, const BufPtr buffer) {
     LOG_INFO("");
 
     HttpSaveSnapshotRsp rsp {};
@@ -1740,8 +1901,7 @@ void StrategyEngine::OnHttpSaveSnapshot(int msg_id, const BufPtr buffer, std::pr
     if (!m_order_manager.IsWalEnabled()) {
         SPDLOG_WARN("WAL is not enabled, cannot save snapshot");
         zrt::fill_field(rsp.error_msg, "WAL is not enabled");
-        ret.set_value(std::make_shared<TBuffer>(rsp));
-        return;
+        return std::make_shared<TBuffer>(rsp);
     }
 
     // 调用 OrderManager 保存快照
@@ -1755,7 +1915,7 @@ void StrategyEngine::OnHttpSaveSnapshot(int msg_id, const BufPtr buffer, std::pr
         zrt::fill_field(rsp.snapshot_path, snapshot_path);
     }
 
-    ret.set_value(std::make_shared<TBuffer>(rsp));
+    return std::make_shared<TBuffer>(rsp);
 }
 
 /**
@@ -1765,7 +1925,7 @@ void StrategyEngine::OnHttpSaveSnapshot(int msg_id, const BufPtr buffer, std::pr
  * @param buffer 请求缓冲区（空）
  * @param ret 响应promise
  */
-void StrategyEngine::OnHttpGetWalStats(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) {
+BufPtr StrategyEngine::OnHttpGetWalStats(int msg_id, const BufPtr buffer) {
     SPDLOG_INFO("OnHttpGetWalStats");
 
     HttpWalStatsRsp rsp {};
@@ -1773,8 +1933,7 @@ void StrategyEngine::OnHttpGetWalStats(int msg_id, const BufPtr buffer, std::pro
 
     if (!m_order_manager.IsWalEnabled()) {
         rsp.success = false;
-        ret.set_value(std::make_shared<TBuffer>(rsp));
-        return;
+        return std::make_shared<TBuffer>(rsp);
     }
 
     const gtrade::WalStats stats = m_order_manager.GetWalStats();
@@ -1790,7 +1949,7 @@ void StrategyEngine::OnHttpGetWalStats(int msg_id, const BufPtr buffer, std::pro
         rsp.need_snapshot = wal_mgr->NeedSnapshot();
     }
 
-    ret.set_value(std::make_shared<TBuffer>(rsp));
+    return std::make_shared<TBuffer>(rsp);
 }
 
 void StrategyEngine::OnDbSetStrategyInfo(int msg_id, const BufPtr buffer) {
@@ -1803,6 +1962,8 @@ void StrategyEngine::OnDbSetStrategyInfo(int msg_id, const BufPtr buffer) {
             proxy->UpdateStratInfoCache(strat_info);
         }
     }
+    // 推送出口（trade 通道的 snapshot）：指标/状态/参数变化即推，替换 web_server 侧 1s 查库
+    m_event_publisher.PublishStrategyInfo(strat_info);
     m_mysql_gateway->PostMsg(kDbSetStrategyInfo, buffer);
 }
 
@@ -2016,4 +2177,421 @@ void StrategyEngine::OnRemoteSyncReq(int /*msg_id*/, const BufPtr buffer) {
 
     // 通过 Proxy 的 PostData 发送给 Runner（Channel A）
     it->second->PostData(static_cast<int>(MsgId::kRemoteSyncResp), resp_buf);
+}
+
+#ifdef GTRADE_ENABLE_HTTP_TRADE
+
+BufPtr StrategyEngine::OnHttpPlaceOrder(int msg_id, const BufPtr buffer) {
+    // 将 HTTP 下单请求转换为内部 OrderReq，通过引擎线程安全地下单，同步返回本地 entno
+    const auto& req = buffer->RefData<HttpPlaceOrderReq>();
+    SPDLOG_INFO("OnHttpPlaceOrder: account={} market={} inst={} portfolio={} side={} type={} px={} sz={}",
+                req.account_id, req.market, req.inst_id, req.portfolio, req.side, req.ord_type, req.px, req.sz);
+
+    HttpPlaceOrderRsp rsp{};
+
+    // 构造 OrderReq
+    OrderReq order_req{};
+    zrt::fill_field(order_req.account_id, std::string(req.account_id));
+    zrt::fill_field(order_req.market,     std::string(req.market));
+    zrt::fill_field(order_req.inst_id,    std::string(req.inst_id));
+    zrt::fill_field(order_req.portfolio,  std::string(req.portfolio));
+    order_req.bs_side    = req.side;
+    order_req.price_type = req.ord_type;
+    order_req.trade_mode = req.td_mode;
+    order_req.price      = req.px;
+    order_req.amount     = req.sz;
+    order_req.ent_time   = req.ent_time;
+    order_req.expire_time = 0;  // GTC
+    zrt::fill_field(order_req.policy_no, std::string("mcp_trade"));
+
+    // instIdCode 是 OKX 下单必填字段（缺失或 0 均被拒：51000 Parameter instIdCode error）。
+    // 策略路径在 OnStart 各自查询填充，此处改从引擎 market info 缓存（启动全量拉取 + 每小时刷新）取，
+    // 且必须按账户所属 market 查：HTTP 请求里的 market 常为 okx，而 dummy 账户归属 okx_dummy，
+    // 同一 instId 在两个市场的 inst_id_code 不同（如 BTC-USDT-SWAP：okx=10459，okx_dummy=2021032601102993）。
+    // 缓存键是 (market, inst_id, inst_type) 三元组；tdMode 只作类型偏好，未精确命中会回落该
+    // instId 的任一条（出厂清单每个 instId 只有一种类型，故总能取到）。
+    {
+        const auto acc_it = m_gtrade_cfg.account_map.find(std::string(req.account_id));
+        if (acc_it != m_gtrade_cfg.account_map.end()) {
+            const MarketInfo* info = FindMarketInfo(acc_it->second.market, std::string(req.inst_id),
+                                                    InstTypeFromTdMode(req.td_mode));
+            if (info != nullptr) {
+                order_req.inst_id_code = info->inst_id_code;
+            }
+        }
+        if (order_req.inst_id_code <= 0) {
+            zrt::fill_field(rsp.error_msg, std::string("inst_id_code not ready, account=") +
+                                               std::string(req.account_id) + " inst=" + std::string(req.inst_id));
+            SPDLOG_ERROR("OnHttpPlaceOrder: {}", rsp.error_msg);
+            rsp.success = false;
+            return std::make_shared<TBuffer>(rsp);
+        }
+    }
+
+    Order new_order{};
+    FillNewEntByReq(new_order, order_req);
+
+    do {
+        Order* order = m_order_manager.AddOrder(new_order);
+        if (!order) {
+            zrt::fill_field(rsp.error_msg, std::string("add order failed"));
+            break;
+        }
+
+        if (!FillSide(*order)) {
+            zrt::fill_field(rsp.error_msg, std::string("FillSide failed"));
+            break;
+        }
+
+        if (!EnsureTradeGateway(std::string(order->market), std::string(order->account_id))) {
+            zrt::fill_field(rsp.error_msg, std::string("create trade gateway failed"));
+            break;
+        }
+
+        const std::string account_id = [&order]() {
+            if constexpr (GlobalConst::IsRealTrading) {
+                return std::string(order->account_id);
+            } else {
+                return std::string(k_DummyTrade);
+            }
+        }();
+
+        zrt::fill_field(order->status, OrderStatus::_1);
+        m_trade_gw_map.at(account_id)->PostMsg(kPlaceOrder, std::make_shared<TBuffer>(*order));
+        rsp.success  = true;
+        rsp.order_id = new_order.entno;
+        return std::make_shared<TBuffer>(rsp);
+    } while (false);
+
+    rsp.success = false;
+    return std::make_shared<TBuffer>(rsp);
+}
+
+BufPtr StrategyEngine::OnHttpCancelOrder(int msg_id, const BufPtr buffer) {
+    // 根据本地 entno 找到委托，发送撤单请求到交易网关
+    const auto& req = buffer->RefData<HttpCancelOrderReq>();
+    SPDLOG_INFO("OnHttpCancelOrder: account={} order_id={}", req.account_id, req.order_id);
+
+    HttpCancelOrderRsp rsp{};
+
+    Order* order = m_order_manager.FindLocalOrder(req.order_id);
+    if (!order) {
+        zrt::fill_field(rsp.error_msg, std::string("order not found"));
+        return std::make_shared<TBuffer>(rsp);
+    }
+
+    WithdrawReq withdraw{};
+    zrt::fill_field(withdraw.market,     std::string(order->market));
+    zrt::fill_field(withdraw.account_id, std::string(order->account_id));
+    zrt::fill_field(withdraw.instrument, std::string(order->inst_id));
+    withdraw.entno = req.order_id;
+
+    if (!EnsureTradeGateway(std::string(withdraw.market), std::string(withdraw.account_id))) {
+        zrt::fill_field(rsp.error_msg, std::string("create trade gateway failed"));
+        return std::make_shared<TBuffer>(rsp);
+    }
+
+    const std::string account_id = [&withdraw]() {
+        if constexpr (GlobalConst::IsRealTrading) {
+            return std::string(withdraw.account_id);
+        } else {
+            return std::string(k_DummyTrade);
+        }
+    }();
+
+    m_trade_gw_map.at(account_id)->PostMsg(kCancelOrder, std::make_shared<TBuffer>(withdraw));
+    rsp.success = true;
+    return std::make_shared<TBuffer>(rsp);
+}
+
+#endif  // GTRADE_ENABLE_HTTP_TRADE
+
+BufPtr StrategyEngine::OnHttpGetDepth(int msg_id, const BufPtr buffer) {
+    // 从内部缓存读取最新行情快照，若未订阅则返回 not_subscribed（Python fallback 到 OKX REST）
+    const auto& req = buffer->RefData<HttpGetDepthReq>();
+    SPDLOG_INFO("OnHttpGetDepth: market={} inst_id={}", req.market, req.inst_id);
+
+    HttpGetDepthRsp rsp{};
+    const std::string market(req.market);
+    const std::string inst_id(req.inst_id);
+
+    const auto market_it = m_depth_cache.find(market);
+    if (market_it == m_depth_cache.end()) {
+        zrt::fill_field(rsp.error_msg, std::string("not_subscribed"));
+        return std::make_shared<TBuffer>(rsp);
+    }
+    const auto inst_it = market_it->second.find(inst_id);
+    if (inst_it == market_it->second.end()) {
+        zrt::fill_field(rsp.error_msg, std::string("not_subscribed"));
+        return std::make_shared<TBuffer>(rsp);
+    }
+
+    const Depth& depth = inst_it->second;
+    rsp.success   = true;
+    rsp.ask_cnt   = depth.ask_cnt;
+    rsp.bid_cnt   = depth.bid_cnt;
+    rsp.timestamp = depth.ex_time;
+    zrt::fill_field(rsp.inst_id, inst_id);
+    zrt::fill_field(rsp.market,  market);
+    for (int i = 0; i < depth.ask_cnt && i < 10; ++i) {
+        rsp.ask_price[i]  = depth.ask_price[i];
+        rsp.ask_amount[i] = depth.ask_amount[i];
+    }
+    for (int i = 0; i < depth.bid_cnt && i < 10; ++i) {
+        rsp.bid_price[i]  = depth.bid_price[i];
+        rsp.bid_amount[i] = depth.bid_amount[i];
+    }
+    return std::make_shared<TBuffer>(rsp);
+}
+
+// 向对应行情服务下发订阅/退订（与 OnSubscribeQuote 路由一致）
+void StrategyEngine::DispatchQuoteSub(const std::string& market, const std::string& inst_id, const bool subscribe) {
+    if constexpr (!GlobalConst::IsRealTrading) {
+        return;   // 回测无行情订阅通道
+    }
+    QuoteSub quote_sub {};
+    zrt::fill_field(quote_sub.channel, std::string(k_depth1));
+    zrt::fill_field(quote_sub.market, market);
+    zrt::fill_field(quote_sub.inst_id, inst_id);
+    zrt::fill_field(quote_sub.strat_id, std::string(k_scope_owner));
+    const int msg_id = subscribe ? MsgId::kStratSubscribeQuote : MsgId::kStratUnsubscribeQuote;
+    const auto buffer = std::make_shared<TBuffer>(quote_sub);
+    try {
+        if (zrt::equal(market, k_okx)) {
+            m_pool.at(k_OkxQuote)->PostMsg(msg_id, buffer);
+        } else if (zrt::equal(market, k_okx_dummy)) {
+            m_pool.at(k_OkxDummyQuote)->PostMsg(msg_id, buffer);
+        } else if (zrt::equal(market, k_ctp)) {
+            m_pool.at(k_CtpQuote)->PostMsg(msg_id, buffer);
+        } else {
+            SPDLOG_ERROR("market={} not supported for quote sub", market);
+        }
+    } catch (const std::exception& e) {
+        // 行情服务未注册（如无 ctp 账户但 DB 存有 ctp 标的）不应拖垮引擎启动/保存流程
+        SPDLOG_ERROR("quote service unavailable: market={} inst_id={} err={}", market, inst_id, e.what());
+    }
+}
+
+void StrategyEngine::EraseDepthCache(const std::string& market, const std::string& instrument) {
+    const auto market_it = m_depth_cache.find(market);
+    if (market_it == m_depth_cache.end()) { return; }
+    market_it->second.erase(instrument);
+    if (market_it->second.empty()) { m_depth_cache.erase(market_it); }
+}
+
+// 范围应用：归一化 → 差集 → 订阅/退订（引用计数）→ 全量落库（异步）
+void StrategyEngine::ApplyInstrumentScope(const ScopeSet& wanted, const bool persist, const bool validate,
+                                          HttpSetInstrumentScopeRsp& rsp) {
+    // 先归一化 inst_type 再算差集：否则 (market, inst_id, "") 与 (market, inst_id, "SPOT") 会被
+    // 当成两条不同条目，退订/订阅来回抖动，库里也会留下空类型行。
+    ScopeSet normalized {};
+    for (const auto& key : wanted) {
+        const std::string inst_type = NormalizeInstType(std::get<0>(key), std::get<1>(key), std::get<2>(key));
+        if (inst_type.empty() && validate) {
+            // 保存路径：类型解析不出（未知 instId，或同 instId 多类型却未指定）→ 计未知并跳过
+            SPDLOG_WARN("instrument scope: unresolved inst_type, market={} inst_id={} given={}",
+                        std::get<0>(key), std::get<1>(key), std::get<2>(key));
+            ++rsp.unknown_cnt;
+            continue;
+        }
+        // 恢复路径（validate=false）原样保留：DB 是真相，像 ctp 这类没有行情缓存的市场解析不出
+        // inst_type 属正常，交给 DispatchQuoteSub 自己记录行情服务不可达。
+        normalized.emplace(std::get<0>(key), std::get<1>(key), inst_type);
+    }
+    const ScopeChange change = DiffScope(m_scope_set, normalized);
+    for (const auto& key : change.removed) {
+        const std::string& market = std::get<0>(key);
+        const std::string& inst_id = std::get<1>(key);
+        m_scope_set.erase(key);
+        // 同 inst_id 还有别的类型在范围内时**不能退订**：行情订阅键不含 inst_type，同 instId 的
+        // 多个范围条目共享同一条订阅，而 k_scope_owner 在 m_quote_sub_map 的引用计数里只算一次
+        //（AddOwner 第二次返回 false）——不移除任一条都会把还在用的另一条一起断掉。
+        if (HasOtherInstType(m_scope_set, key)) {
+            ++rsp.kept_cnt;
+            continue;
+        }
+        const QuoteSubKey sub_key {k_depth1, market, inst_id};
+        const bool unsubscribed = RemoveOwner(m_quote_sub_map, sub_key, k_scope_owner);
+        if (unsubscribed) {
+            DispatchQuoteSub(market, inst_id, false);
+            EraseDepthCache(market, inst_id);
+            ++rsp.removed_cnt;
+        } else if (m_quote_sub_map.count(sub_key) > 0) {
+            ++rsp.kept_cnt;   // 策略仍在用，交易所侧保留
+        }
+    }
+    for (const auto& key : change.added) {
+        const std::string& market = std::get<0>(key);
+        const std::string& inst_id = std::get<1>(key);
+        if (validate && FindMarketInfoExact(market, inst_id, std::get<2>(key)) == nullptr) {
+            ++rsp.unknown_cnt;   // 未知标的跳过（inst_type 也必须对得上，不能只看 instId）
+            continue;
+        }
+        const QuoteSubKey sub_key {k_depth1, market, inst_id};
+        const bool first_owner = AddOwner(m_quote_sub_map, sub_key, k_scope_owner);
+        m_scope_set.insert(key);
+        if (first_owner) {
+            DispatchQuoteSub(market, inst_id, true);
+        }
+        ++rsp.applied_cnt;
+    }
+    if (persist && m_mysql_gateway != nullptr) {
+        const auto db_buf = std::make_shared<TBuffer>();
+        for (const auto& key : m_scope_set) {
+            InstrumentScopeItem item {};
+            zrt::fill_field(item.market, std::get<0>(key));
+            zrt::fill_field(item.inst_id, std::get<1>(key));
+            zrt::fill_field(item.inst_type, std::get<2>(key));
+            db_buf->Append(item);
+        }
+        m_mysql_gateway->PostMsg(kDbSetInstrumentScope, db_buf);   // 异步，不等待
+    }
+    rsp.success = true;
+    SPDLOG_INFO("apply instrument scope: applied={} removed={} kept={} unknown={} scope_size={}",
+                rsp.applied_cnt, rsp.removed_cnt, rsp.kept_cnt, rsp.unknown_cnt, m_scope_set.size());
+}
+
+// 启动时从 DB 恢复（在策略启动前调用；不校验市场信息——DB 是真相）
+void StrategyEngine::LoadInstrumentScopeFromDb() {
+    if constexpr (!GlobalConst::IsRealTrading) { return; }
+    BufPtr rsp_buf {};
+    m_mysql_gateway->PostSyncMsg(kDbQueryInstrumentScopeReq, std::make_shared<TBuffer>(), rsp_buf);
+    ScopeSet wanted {};
+    if (rsp_buf) {
+        rsp_buf->ForEach<InstrumentScopeItem>([&wanted](const InstrumentScopeItem& item) {
+            // inst_type 可能为空（加列前的老行）——不在这里补，交给 ApplyInstrumentScope 统一
+            // 归一化（validate=false 时按"能推断就补、推断不出原样保留"处理）
+            wanted.emplace(std::string(item.market), std::string(item.inst_id), std::string(item.inst_type));
+        });
+    } else {
+        SPDLOG_WARN("empty response for instrument_scope query, skip scope restore");
+    }
+    HttpSetInstrumentScopeRsp rsp {};
+    ApplyInstrumentScope(wanted, /*persist=*/false, /*validate=*/false, rsp);
+    SPDLOG_INFO("instrument scope restored from db: size={}", m_scope_set.size());
+}
+
+// 策略停/删时清理其订阅 owner；最后一个 owner 移除才下发退订（幽灵订阅修复）
+void StrategyEngine::CleanupQuoteSubsOfOwner(const std::string& owner) {
+    const std::vector<QuoteSubKey> emptied = RemoveAllOwnedBy(m_quote_sub_map, owner);
+    for (const auto& key : emptied) {
+        const auto& [channel, market, inst_id] = key;
+        if (!zrt::equal(channel, k_depth1)) { continue; }   // 目前仅 depth1 有 WS 退订通道
+        DispatchQuoteSub(market, inst_id, false);
+        EraseDepthCache(market, inst_id);
+    }
+    if (!emptied.empty()) {
+        SPDLOG_INFO("cleaned {} quote subs for owner={}", emptied.size(), owner);
+    }
+}
+
+BufPtr StrategyEngine::OnHttpQueryInstruments(int msg_id, const BufPtr buffer) {
+    const auto rsp_buf = std::make_shared<TBuffer>();
+    // 三层遍历：market → inst_id → inst_type，每个三元组出一条（同 instId 的不同类型各占一行）
+    for (const auto& [market, inst_map] : m_market_info_map) {
+        for (const auto& [instrument, type_map] : inst_map) {
+            for (const auto& [inst_type, info] : type_map) {
+                InstrumentInfoItem item {};
+                zrt::fill_field(item.market, market);
+                zrt::fill_field(item.inst_id, instrument);
+                // 键本身就是 OKX 风格字符串（插入时由 DictInstType2Okx 转过），无需再转一次
+                zrt::fill_field(item.inst_type, inst_type);
+                rsp_buf->Append(item);
+            }
+        }
+    }
+    SPDLOG_INFO("OnHttpQueryInstruments: {} items", rsp_buf->GetSize() / sizeof(InstrumentInfoItem));
+    return rsp_buf;
+}
+
+// 行情缓存精确查：仅当 (market, inst_id, inst_type) 三元组存在时返回，否则 nullptr。
+// 范围校验用这个 —— "该类型的标的存在吗"必须精确回答，不能靠偏好回落。
+const MarketInfo* StrategyEngine::FindMarketInfoExact(const std::string& market, const std::string& inst_id,
+                                                      const std::string& inst_type) const {
+    const auto market_it = m_market_info_map.find(market);
+    if (market_it == m_market_info_map.end()) { return nullptr; }
+    const auto inst_it = market_it->second.find(inst_id);
+    if (inst_it == market_it->second.end()) { return nullptr; }
+    const auto type_it = inst_it->second.find(inst_type);
+    return type_it == inst_it->second.end() ? nullptr : &type_it->second;
+}
+
+// 行情缓存查询：inst_type 非空时**优先**精确命中，未命中再按固定优先级取该 instId 的任一条
+//（inst_type 是偏好而非过滤器 —— 同一份 tdMode 对现货表示"现货/杠杆"、对合约表示保证金模式，
+// 硬过滤会把合法的合约单误杀）；inst_type 为空时直接用优先级。优先级 SPOT > SWAP > FUTURES
+// > OPTION > MARGIN，与"同 instId 时假定现货"的既有语义一致。
+// 返回缓存内部指针：仅限引擎线程使用，且不得跨 m_market_info_map 变更持有（每小时刷新会重建条目）。
+const MarketInfo* StrategyEngine::FindMarketInfo(const std::string& market, const std::string& inst_id,
+                                                 const std::string& inst_type) const {
+    const auto market_it = m_market_info_map.find(market);
+    if (market_it == m_market_info_map.end()) { return nullptr; }
+    const auto inst_it = market_it->second.find(inst_id);
+    if (inst_it == market_it->second.end()) { return nullptr; }
+    const MarketInfoTypeMap& type_map = inst_it->second;
+    if (!inst_type.empty()) {
+        const auto type_it = type_map.find(inst_type);
+        if (type_it != type_map.end()) { return &type_it->second; }
+    }
+    for (const char* preferred : {k_SPOT, k_SWAP, k_FUTURES, k_OPTION, k_MARGIN}) {
+        const auto type_it = type_map.find(preferred);
+        if (type_it != type_map.end()) { return &type_it->second; }
+    }
+    return type_map.empty() ? nullptr : &type_map.begin()->second;   // 兜底：未知类型也返回一条
+}
+
+// 范围条目的 inst_type 归一化：空串（老 DB 行 / 未带 inst_type 的客户端）按行情缓存推断 ——
+// 该 (market, inst_id) 只有一种类型时才补上（出厂清单恒满足）；多类型或查不到则保持空串，
+// 由调用方按未知标的处理。返回空串表示推断不出。
+std::string StrategyEngine::NormalizeInstType(const std::string& market, const std::string& inst_id,
+                                              const std::string& inst_type) const {
+    if (!inst_type.empty()) { return inst_type; }
+    const auto market_it = m_market_info_map.find(market);
+    if (market_it == m_market_info_map.end()) { return {}; }
+    const auto inst_it = market_it->second.find(inst_id);
+    if (inst_it == market_it->second.end() || inst_it->second.size() != 1) { return {}; }
+    return inst_it->second.begin()->first;
+}
+
+// 范围集合里该 (market, inst_id) 的 inst_type；不在范围内返回空串（范围上限 128，线性扫可接受）
+std::string StrategyEngine::ScopeTypeOf(const std::string& market, const std::string& inst_id) const {
+    for (const auto& key : m_scope_set) {
+        if (std::get<0>(key) == market && std::get<1>(key) == inst_id) { return std::get<2>(key); }
+    }
+    return {};
+}
+
+BufPtr StrategyEngine::OnHttpGetInstrumentScope(int msg_id, const BufPtr buffer) {
+    const auto rsp_buf = std::make_shared<TBuffer>();
+    for (const auto& [key, owners] : m_quote_sub_map) {
+        const auto& [channel, market, inst_id] = key;
+        if (!zrt::equal(channel, k_depth1)) { continue; }
+        // 订阅键（channel, market, inst_id）不含 inst_type，而前端要按三元组给条目对齐 owner，
+        // 故从范围集合反查该 inst_id 的类型；策略在用但未纳入范围的条目留空串。
+        const std::string inst_type = ScopeTypeOf(market, inst_id);
+        for (const auto& owner : owners) {
+            ScopeOwnerItem item {};
+            zrt::fill_field(item.market, market);
+            zrt::fill_field(item.inst_id, inst_id);
+            zrt::fill_field(item.inst_type, inst_type);
+            zrt::fill_field(item.owner, owner);
+            rsp_buf->Append(item);
+        }
+    }
+    return rsp_buf;
+}
+
+BufPtr StrategyEngine::OnHttpSetInstrumentScope(int msg_id, const BufPtr buffer) {
+    const auto& req = buffer->RefData<HttpSetInstrumentScopeReq>();
+    HttpSetInstrumentScopeRsp rsp {};
+    if (req.count < 0 || req.count > kMaxScopeItems) {
+        zrt::fill_field(rsp.error_msg, std::string("count out of range"));
+        return std::make_shared<TBuffer>(rsp);
+    }
+    ScopeSet wanted {};
+    for (int i = 0; i < req.count; ++i) {
+        wanted.emplace(std::string(req.items[i].market), std::string(req.items[i].inst_id),
+                       std::string(req.items[i].inst_type));
+    }
+    ApplyInstrumentScope(wanted, /*persist=*/true, /*validate=*/true, rsp);
+    return std::make_shared<TBuffer>(rsp);
 }

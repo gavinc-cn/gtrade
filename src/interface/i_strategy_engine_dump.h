@@ -29,4 +29,15 @@ std::ostream& operator<<(std::ostream& os, const HttpQueryRsp& st);
 std::ostream& operator<<(std::ostream& os, const HttpSaveSnapshotRsp& st);
 std::ostream& operator<<(std::ostream& os, const HttpWalStatsRsp& st);
 std::ostream& operator<<(std::ostream& os, const StratQryMarketInfoReq& st);
+std::ostream& operator<<(std::ostream& os, const HttpPlaceOrderReq& st);
+std::ostream& operator<<(std::ostream& os, const HttpPlaceOrderRsp& st);
+std::ostream& operator<<(std::ostream& os, const HttpCancelOrderReq& st);
+std::ostream& operator<<(std::ostream& os, const HttpCancelOrderRsp& st);
+std::ostream& operator<<(std::ostream& os, const HttpGetDepthReq& st);
+std::ostream& operator<<(std::ostream& os, const HttpGetDepthRsp& st);
+std::ostream& operator<<(std::ostream& os, const InstrumentScopeItem& st);
+std::ostream& operator<<(std::ostream& os, const InstrumentInfoItem& st);
+std::ostream& operator<<(std::ostream& os, const ScopeOwnerItem& st);
+std::ostream& operator<<(std::ostream& os, const HttpSetInstrumentScopeReq& st);
+std::ostream& operator<<(std::ostream& os, const HttpSetInstrumentScopeRsp& st);
 #endif // __linux__

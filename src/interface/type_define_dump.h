@@ -12,5 +12,6 @@ std::ostream& operator<<(std::ostream& os, const Account& st);
 std::ostream& operator<<(std::ostream& os, const DBConfig& st);
 std::ostream& operator<<(std::ostream& os, const ProxyConfig& st);
 std::ostream& operator<<(std::ostream& os, const ExchangeUrlConfig& st);
+std::ostream& operator<<(std::ostream& os, const DpdkProbeConfig& st);
 std::ostream& operator<<(std::ostream& os, const GTradeConfig& st);
 #endif // __linux__

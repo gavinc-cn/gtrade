@@ -92,6 +92,64 @@ void OrderManager::RecoverOrder(const Order& order) {
     m_order_map[order.entno] = order;
 }
 
+void OrderManager::SetIdBase(const int64_t seen_max_entno, const int64_t seen_max_tdno) {
+    // 时间基数：进程启动时刻（秒 ×1e9），与历史号同量纲，故可直接比较
+    const int64_t time_base = MyUTC().Epoch10() * zrt::kGiga;
+    // 已见最大号 + 1 才是安全起点；无历史数据时退回时间基数
+    const int64_t order_base = (seen_max_entno > 0) ? std::max(time_base, seen_max_entno + 1) : time_base;
+    const int64_t trade_base = (seen_max_tdno > 0) ? std::max(time_base, seen_max_tdno + 1) : time_base;
+
+    // CAS 循环：只抬高不降低，重复调用安全（并发时取更大者）
+    int64_t current = start_ordno.load(std::memory_order_relaxed);
+    while (current < order_base &&
+           !start_ordno.compare_exchange_weak(current, order_base, std::memory_order_relaxed)) {
+    }
+    current = start_trdno.load(std::memory_order_relaxed);
+    while (current < trade_base &&
+           !start_trdno.compare_exchange_weak(current, trade_base, std::memory_order_relaxed)) {
+    }
+
+    SPDLOG_INFO("id base set: start_ordno={} (seen_max_entno={}), start_trdno={} (seen_max_tdno={}), time_base={}",
+                start_ordno.load(std::memory_order_relaxed), seen_max_entno,
+                start_trdno.load(std::memory_order_relaxed), seen_max_tdno, time_base);
+}
+
+int64_t OrderManager::GetMaxOrderNo() const {
+    int64_t max_no = 0;
+    for (const auto& [entno, order] : m_order_map) {
+        if (entno > max_no) {
+            max_no = entno;
+        }
+    }
+    return max_no;
+}
+
+int64_t OrderManager::GetMaxTradeNo() const {
+    int64_t max_no = 0;
+    for (const auto& [tdno, trade] : m_trade_map) {
+        if (tdno > max_no) {
+            max_no = tdno;
+        }
+    }
+    return max_no;
+}
+
+// ===== 补查：读内存权威态（web_server 断线重连后按游标补齐）=====
+// 具体筛选逻辑在头文件的 SelectAfterCursor / SelectByKeys（静态纯函数，便于单测）；
+// 补查是低频操作（重连触发），单次 O(n log n) 可接受，n 为启动窗口内加载的记录数。
+
+std::vector<Order> OrderManager::QueryOrdersAfter(const int64_t cursor_entno, const size_t limit) const {
+    return SelectAfterCursor(m_order_map, cursor_entno, limit);
+}
+
+std::vector<Order> OrderManager::QueryOrdersByEntnos(const int64_t* entnos, const size_t count) const {
+    return SelectByKeys(m_order_map, entnos, count);
+}
+
+std::vector<Trade> OrderManager::QueryTradesAfter(const int64_t cursor_tdno, const size_t limit) const {
+    return SelectAfterCursor(m_trade_map, cursor_tdno, limit);
+}
+
 void OrderManager::SaveOrder2Shm(const Order& order) {
     if constexpr (GlobalConst::IsBackTest) {
         return;

@@ -34,6 +34,13 @@ std::ostream& operator<<(std::ostream& os, const ExchangeUrlConfig& st)
     return os;
 }
             
+std::ostream& operator<<(std::ostream& os, const DpdkProbeConfig& st)
+{
+    os << "{" 
+    << "}";
+    return os;
+}
+            
 std::ostream& operator<<(std::ostream& os, const GTradeConfig& st)
 {
     os << "{" 

@@ -13,11 +13,13 @@
 #include "out_process_proxy.h"
 #include "zmq_acceptor.h"
 #include "remote_proxy.h"
+#include "instrument_scope.h"
 #include "zrtools/io_pool_v2/io_pool.h"
 #include "type_define.h"
 #include "i_exchange_data_dump.h"
 #include "zrtools/zrt_bmic_hashed.h"
 #include "order_manager.h"
+#include "event_publisher.h"
 #include "kline_manager.h"
 #include "qry_srv.h"
 #include "timer_manager.h"
@@ -31,6 +33,14 @@ enum class DataStatus {
     kReqSent,
     kReady,
 };
+
+// 行情信息缓存的三元键：instType 是标的唯一性的一部分 —— OKX 的币币杠杆（MARGIN）复用现货的
+// instId，且 instIdCode 与全部规格字段都相同，二元键（market, inst_id）会让后到的类型静默
+// 覆盖先到的。第三维用 OKX 风格字符串（"SPOT"/"SWAP"/...），与范围订阅链（HTTP/DB/前端）
+// 同型，可一路透传。
+using MarketInfoTypeMap = std::unordered_map<std::string, MarketInfo>;          // inst_type → 信息
+using MarketInfoInstMap = std::unordered_map<std::string, MarketInfoTypeMap>;  // inst_id   → 各类型
+using MarketInfoMap     = std::unordered_map<std::string, MarketInfoInstMap>;  // market    → 各标的
 
 
 class StrategyEngine final : public MyHandler {
@@ -109,6 +119,8 @@ private:
         const std::string& so_path,
         const std::string& strat_id);
     void LoadRecentOrdersFromDb();
+    // 启动高水位：按 DB + 内存已恢复数据的最大号设置号段基数（见 OrderManager::SetIdBase）
+    void SetupIdBaseFromDb();
 
     // 从共享内存扫描并加载策略
     // 扫描 /dev/shm/ 目录中的检查点文件，根据策略ID查找配置文件并加载
@@ -117,10 +129,10 @@ private:
     void SetupMarketInfoRefreshTimer() const;  // 设置市场信息定时刷新（每小时）
     void RefreshAllMarketInfo(bool is_sync);  // 刷新所有已知市场的信息
     void OnDefaultMsg(int msg_id, const BufPtr buffer);
-    void OnDefaultSyncMsg(int msg_id, const BufPtr buffer, std::promise<BufPtr >& ret);
+    BufPtr OnDefaultSyncMsg(int msg_id, const BufPtr buffer);
     std::string BuildQueryMarketInfoBuf(const BufPtr& buffer, BufPtr& rsp_buffer);
     void OnStratQueryMarketInfoReq(int msg_id, BufPtr buffer);
-    void OnStratQueryMarketInfoSync(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret);
+    BufPtr OnStratQueryMarketInfoSync(int msg_id, const BufPtr buffer);
     // 外发通知消息
     void OnNotifyMsg(int msg_id, const BufPtr buffer) const;
     // 订阅
@@ -144,9 +156,14 @@ private:
     void OnPlaceOrderConfirm(int msg_id, const BufPtr buffer);
     void OnOrderRecovery(int msg_id, const BufPtr buffer);  // websocket重连后的委托恢复
     void CreateTrade(const Order& local_order, const Order& recv_order);
+    // 用本地委托补齐交易所成交回报缺失的本地字段（tdno/ordno/策略号/组合等）
+    void FillTradeLocalFields(Trade& trade);
     void OnTradePush(int msg_id, const BufPtr buffer);
     void OnPosPush(int msg_id, const BufPtr buffer);
     void OnBalancePush(int msg_id, const BufPtr buffer);
+    // 补查（web_server → 引擎）：读内存权威态，响应为若干条 Order/Trade 记录
+    BufPtr OnHttpQueryOrders(int msg_id, const BufPtr buffer);
+    BufPtr OnHttpQueryTrades(int msg_id, const BufPtr buffer);
     // 行情
     void OnDepth1(int msg_id, const BufPtr buffer);
     // 策略查询
@@ -174,18 +191,44 @@ private:
     void OnIndicatorKlineOpenPush(int msg_id, const BufPtr buffer);
     void OnIndicatorKlineClosePush(int msg_id, const BufPtr buffer);
     // HTTP策略管理
-    void OnHttpAddStrategy(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret);
-    void OnHttpDeleteStrategy(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret);
-    void OnHttpRestartStrategy(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret);
-    void OnHttpStartStrategy(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret);
-    void OnHttpStopStrategy(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret);
-    void OnHttpQueryAllStrategies(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret);
-    void OnHttpQueryStrategiesByTemplate(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret);
-    void OnHttpGetTemplates(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret);
-    void OnHttpGetTemplateConfig(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret);
+    BufPtr OnHttpAddStrategy(int msg_id, const BufPtr buffer);
+    BufPtr OnHttpDeleteStrategy(int msg_id, const BufPtr buffer);
+    BufPtr OnHttpRestartStrategy(int msg_id, const BufPtr buffer);
+    BufPtr OnHttpStartStrategy(int msg_id, const BufPtr buffer);
+    BufPtr OnHttpStopStrategy(int msg_id, const BufPtr buffer);
+    BufPtr OnHttpQueryAllStrategies(int msg_id, const BufPtr buffer);
+    BufPtr OnHttpQueryStrategiesByTemplate(int msg_id, const BufPtr buffer);
+    BufPtr OnHttpGetTemplates(int msg_id, const BufPtr buffer);
+    BufPtr OnHttpGetTemplateConfig(int msg_id, const BufPtr buffer);
     // HTTP系统管理
-    void OnHttpSaveSnapshot(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret);
-    void OnHttpGetWalStats(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret);
+    BufPtr OnHttpSaveSnapshot(int msg_id, const BufPtr buffer);
+    BufPtr OnHttpGetWalStats(int msg_id, const BufPtr buffer);
+#ifdef GTRADE_ENABLE_HTTP_TRADE
+    // HTTP 交易接口（MCP，仅在 GTRADE_ENABLE_HTTP_TRADE 编译时开放）
+    BufPtr OnHttpPlaceOrder(int msg_id, const BufPtr buffer);
+    BufPtr OnHttpCancelOrder(int msg_id, const BufPtr buffer);
+#endif  // GTRADE_ENABLE_HTTP_TRADE
+    BufPtr OnHttpGetDepth(int msg_id, const BufPtr buffer);
+    // 标的范围订阅（web 设置页）
+    void DispatchQuoteSub(const std::string& market, const std::string& inst_id, bool subscribe);
+    void EraseDepthCache(const std::string& market, const std::string& instrument);
+    void ApplyInstrumentScope(const ScopeSet& wanted, bool persist, bool validate, HttpSetInstrumentScopeRsp& rsp);
+    void LoadInstrumentScopeFromDb();
+    void CleanupQuoteSubsOfOwner(const std::string& owner);
+    BufPtr OnHttpQueryInstruments(int msg_id, const BufPtr buffer);
+    BufPtr OnHttpGetInstrumentScope(int msg_id, const BufPtr buffer);
+    BufPtr OnHttpSetInstrumentScope(int msg_id, const BufPtr buffer);
+    // 行情信息缓存查询（三元键，见 m_market_info_map）
+    const MarketInfo* FindMarketInfoExact(const std::string& market, const std::string& inst_id,
+                                          const std::string& inst_type) const;
+    const MarketInfo* FindMarketInfo(const std::string& market, const std::string& inst_id,
+                                     const std::string& inst_type = "") const;
+    // 范围条目的 inst_type 归一化：空串按行情缓存推断（该 inst_id 只有一种类型才补），
+    // 返空表示推断不出（调用方按未知标的处理）
+    std::string NormalizeInstType(const std::string& market, const std::string& inst_id,
+                                  const std::string& inst_type) const;
+    // 范围里该 (market, inst_id) 的 inst_type；不在范围内返回空串
+    std::string ScopeTypeOf(const std::string& market, const std::string& inst_id) const;
     // 数据库操作
     void OnDbSetStrategyInfo(int msg_id, const BufPtr buffer);
     void OnDbSetStrategyLog(int msg_id, const BufPtr buffer);
@@ -199,10 +242,11 @@ private:
     void SendToStrategy(int msg_id, const BufPtr buffer, const std::string& strat_id);
     // 转发给所有策略
     void SendToAllStrategies(int msg_id, const BufPtr buffer);
-    // 发给订阅的策略
+    // 发给订阅的策略；owner 集合可能含订阅持有者 k_scope_owner（__scope__），它不是策略、跳过
     template<typename T>
     void SendToSubedStrategies(const int msg_id, const BufPtr buffer, const T& container) {
         for (const auto& strat_id: container) {
+            if (zrt::equal(strat_id, k_scope_owner)) { continue; }
             SendToStrategy(msg_id, buffer, strat_id);
         }
     }
@@ -233,6 +277,8 @@ private:
     std::unordered_map<std::string,std::unordered_set<std::string>> m_template_strategy_map {};
     // 订单管理
     OrderManager m_order_manager {};
+    // 推送出口（引擎 → web_server；无订阅者时零开销，未启用时不建连接）
+    EventPublisher m_event_publisher {};
     // K线管理
     std::unique_ptr<KLineManager> m_kline_manager {};
     // 回测事件管理
@@ -241,6 +287,8 @@ private:
     /// 订阅信息管理 ///
     // <channel,market,inst_id>,<strat_id>> 行情订阅信息
     std::unordered_map<std::tuple<std::string,std::string,std::string>,std::unordered_set<std::string>,zrt::TupleHasher> m_quote_sub_map {};
+    // 标的范围订阅（web 设置页）：(market, inst_id) 集合；owner 标识见 k_scope_owner
+    ScopeSet m_scope_set {};
     // <market,instrument,coefficient,scale>,<strat_id>> K线订阅信息
     std::unordered_map<std::tuple<std::string,std::string,int,char>,std::unordered_set<std::string>,zrt::TupleHasher> m_kline_sub_map {};
     // <market,instrument,coefficient,scale>,<strat_id>> K线open订阅信息
@@ -251,11 +299,15 @@ private:
     std::unordered_map<std::string,std::unordered_map<std::string,std::unordered_set<std::string>>> m_trade_sub_map {};
     ///
 
-    // <market,<instrument,MarketInfo>>
-    std::unordered_map<std::string,std::unordered_map<std::string,MarketInfo>> m_market_info_map {};
+    // <market,<inst_id,<inst_type,MarketInfo>>>：inst_type 为 OKX 风格 "SPOT"/"SWAP"/...
+    //（同 (market, inst_id) 的不同 inst_type 各占一条；插入点在 OnQueryMarketInfoRsp）
+    MarketInfoMap m_market_info_map {};
 
     // <market,<instrument,last_price>> 最新行情价格（用于更新未实现收益）
     std::unordered_map<std::string,std::unordered_map<std::string,double>> m_last_price_map {};
+
+    // <market,<symbol,Depth>> 最新行情快照缓存（供 HTTP/MCP get_depth 读取）
+    std::unordered_map<std::string,std::unordered_map<std::string,Depth>> m_depth_cache {};
 
     /// 数据状态管理 ///
     // <market,DataStatus>

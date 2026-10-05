@@ -80,6 +80,13 @@ struct HisEntrustsQryReq: public QryReqBase {
     int64_t end_time;
 };
 
+// 启动高水位查询响应：order / trade 表当前最大号（无记录时为 0）
+// 用途：设置号段基数，保证跨重启（含同一秒内重启）ID 单调不重叠
+struct MaxIdsQryRsp {
+    int64_t max_entno;
+    int64_t max_tdno;
+};
+
 // 外发通知消息
 struct NotifyMessageReq {
     NoticeChannelCs channel;      // 频道名称

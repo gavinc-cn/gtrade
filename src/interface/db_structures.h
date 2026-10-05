@@ -74,6 +74,7 @@ struct Order {
     int64_t status_gid;  // 订单状态全局id
     double trd_px;  // 最近一笔成交价
     double trd_qty;  // 最近一笔成交量
+    int64_t quote_monotonic;  // 延时测量 T0 贯穿（rdtsc 域 ns，源自 Depth.monotonic → 策略 OrderReq → 此处），非 DB 持久化字段
 };
 
 // 持仓

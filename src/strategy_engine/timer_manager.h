@@ -27,7 +27,7 @@ public:
     bool Start() override;
 private:
     void OnDefaultMsg(int msg_id, const BufPtr buffer) override {}
-    void OnDefaultSyncMsg(int msg_id, const BufPtr buffer, std::promise<BufPtr >& ret) override {}
+    BufPtr OnDefaultSyncMsg(int msg_id, const BufPtr buffer) override { return nullptr; }
     void OnStartEpochGenerator(int msg_id, const BufPtr buffer) override;
     void OnTimerEventPush(const TimerInfo& timer_info);
     void ResetTimer(const TimerInfo& timer_info);
@@ -36,7 +36,7 @@ private:
     void OnClearAllTimer(int msg_id, const BufPtr buffer) override;
     void OnPauseAllTimer(int msg_id, const BufPtr buffer) override;
     void OnResumeAllTimer(int msg_id, const BufPtr buffer) override;
-    void OnListAllTimer(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) override;
+    BufPtr OnListAllTimer(int msg_id, const BufPtr buffer) override;
 
     ServiceMap& m_pool;
     const GTradeConfig m_gtrade_cfg {};

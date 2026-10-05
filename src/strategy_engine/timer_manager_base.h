@@ -22,7 +22,7 @@ public:
     virtual void UpdateTime(int64_t new_time) {}
 protected:
     virtual void OnDefaultMsg(int msg_id, const BufPtr buffer) {}
-    virtual void OnDefaultSyncMsg(int msg_id, const BufPtr buffer, std::promise<BufPtr >& ret) {}
+    virtual BufPtr OnDefaultSyncMsg(int msg_id, const BufPtr buffer) { return nullptr; }
     virtual void OnStartEpochGenerator(int msg_id, const BufPtr buffer) {}
     // virtual void OnTimerEventPush(const TimerInfo& timer_info) {}
     // virtual void ResetTimer(const TimerInfo& timer_info) {}
@@ -31,7 +31,7 @@ protected:
     virtual void OnClearAllTimer(int msg_id, const BufPtr buffer) = 0;
     virtual void OnPauseAllTimer(int msg_id, const BufPtr buffer) = 0;
     virtual void OnResumeAllTimer(int msg_id, const BufPtr buffer) = 0;
-    virtual void OnListAllTimer(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) = 0;
+    virtual BufPtr OnListAllTimer(int msg_id, const BufPtr buffer) = 0;
 };
 
 

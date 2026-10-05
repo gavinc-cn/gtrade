@@ -6,6 +6,7 @@
 
 #include "pch.h"
 #include <dict.h>
+#include <algorithm>
 #include <chrono>
 #include "zrtools/zrt_time.h"
 #include "i_exchange_data_dump.h"
@@ -28,8 +29,76 @@ public:
     // 构造函数：初始化共享内存
     OrderManager();
 
-    static int64_t CreateOrderId() {return start_ordno + ++order_id_seq;}
-    static int64_t CreateTradeId() {return start_trdno + ++trade_id_seq;}
+    // 业务号生成：基数 + 进程内自增（基数由 SetIdBase 在启动期按高水位设置）
+    static int64_t CreateOrderId() {return start_ordno.load(std::memory_order_relaxed) + ++order_id_seq;}
+    static int64_t CreateTradeId() {return start_trdno.load(std::memory_order_relaxed) + ++trade_id_seq;}
+
+    // 设置号段基数（启动期调用一次，重复调用只会抬高不会降低）：
+    // 取"当前时间基数"与"已见最大号 + 1"的较大者，保证跨重启（含同一秒内重启）
+    // 生成的 entno/tdno 单调递增、不与历史号重叠（方案 rev4 §8）。
+    static void SetIdBase(int64_t seen_max_entno, int64_t seen_max_tdno);
+    // 取当前号段基数（诊断/日志用）
+    static int64_t GetOrderIdBase() {return start_ordno.load(std::memory_order_relaxed);}
+    static int64_t GetTradeIdBase() {return start_trdno.load(std::memory_order_relaxed);}
+    // 已见最大号（内存 + 从 SHM 恢复的部分），供启动高水位取上界
+    int64_t GetMaxOrderNo() const;
+    int64_t GetMaxTradeNo() const;
+
+    // ===== 补查（web_server ↔ 引擎）：读内存权威态，不查库 =====
+    // 取 entno > cursor_entno 的委托，按 entno 升序，最多 limit 条（limit==0 视为不限）
+    std::vector<Order> QueryOrdersAfter(int64_t cursor_entno, size_t limit) const;
+    // 按委托号集合取委托（含终态；不存在的号自动跳过），返回顺序与 entnos 一致
+    std::vector<Order> QueryOrdersByEntnos(const int64_t* entnos, size_t count) const;
+    // 取 tdno > cursor_tdno 的成交，按 tdno 升序，最多 limit 条（limit==0 视为不限）
+    std::vector<Trade> QueryTradesAfter(int64_t cursor_tdno, size_t limit) const;
+
+    // 补查通用实现（纯函数，静态可单测，不依赖实例/共享内存）：
+    // 取 号 > cursor 的记录，按号升序，最多 limit 条（limit==0 视为不限）
+    template <typename T>
+    static std::vector<T> SelectAfterCursor(const std::unordered_map<int64_t, T>& rows,
+                                            const int64_t cursor, const size_t limit) {
+        std::vector<int64_t> keys {};
+        keys.reserve(rows.size());
+        for (const auto& [no, row] : rows) {
+            if (no > cursor) {
+                keys.push_back(no);
+            }
+        }
+        std::sort(keys.begin(), keys.end());
+        if (limit > 0 && keys.size() > limit) {
+            keys.resize(limit);
+        }
+        std::vector<T> result {};
+        result.reserve(keys.size());
+        for (const int64_t no : keys) {
+            const auto iter = rows.find(no);
+            if (iter != rows.end()) {
+                result.push_back(iter->second);
+            }
+        }
+        return result;
+    }
+
+    // 取 号 ∈ keys 的记录（含终态），按 keys 顺序返回，缺失的号跳过
+    template <typename T>
+    static std::vector<T> SelectByKeys(const std::unordered_map<int64_t, T>& rows,
+                                       const int64_t* keys, const size_t count) {
+        std::vector<T> result {};
+        if (keys == nullptr) {
+            return result;
+        }
+        result.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            const auto iter = rows.find(keys[i]);
+            if (iter != rows.end()) {
+                result.push_back(iter->second);
+            } else {
+                // 不在内存里（超出启动加载窗口 / 非本引擎下单）：跳过并记 DEBUG 便于排查
+                SPDLOG_DEBUG("query by keys: no={} not in memory", keys[i]);
+            }
+        }
+        return result;
+    }
 
     size_t GetOrderCount() const {return m_order_map.size();}
     size_t GetTradeCount() const {return m_trade_map.size();}
@@ -184,8 +253,12 @@ private:
     // <market,account_id,instrument,margin_mode,pos_side,strat_id>
     using StratPosPKey = std::tuple<std::string,std::string,std::string,char,char,std::string>;
 
-    static inline const int64_t start_ordno = MyUTC().Epoch10() * zrt::kGiga;
-    static inline const int64_t start_trdno = MyUTC().Epoch10() * zrt::kGiga;
+    // 号段基数：默认取进程启动时刻（秒 ×1e9，即 epoch19 纳秒量级）；
+    // 启动加载历史数据后由 SetIdBase 抬到高水位（见头文件声明处注释）。
+    // 注意：不能改成毫秒基数——Epoch10()*kGiga 已是 1.8e18 量级，
+    //       再乘 1e3 会溢出 int64（上限 9.22e18）。
+    static inline std::atomic<int64_t> start_ordno {MyUTC().Epoch10() * zrt::kGiga};
+    static inline std::atomic<int64_t> start_trdno {MyUTC().Epoch10() * zrt::kGiga};
     static inline std::atomic<int64_t> order_id_seq {};
     static inline std::atomic<int64_t> trade_id_seq {};
     // <entno,Order>

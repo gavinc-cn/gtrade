@@ -323,15 +323,15 @@ void StrategyBase::SaveStrategyInfo() const {
 }
 
 // 生命周期同步 handler：在策略自身线程执行 OnStart/OnStop，避免引擎线程直接调用的数据竞争
-void StrategyBase::OnStratStartSync(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) {
+BufPtr StrategyBase::OnStratStartSync(int msg_id, const BufPtr buffer) {
     HttpStrategyOperationRsp rsp{};
     rsp.success = OnStart();
-    ret.set_value(std::make_shared<TBuffer>(rsp));
+    return std::make_shared<TBuffer>(rsp);
 }
 
-void StrategyBase::OnStratStopSync(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) {
+BufPtr StrategyBase::OnStratStopSync(int msg_id, const BufPtr buffer) {
     HttpStrategyOperationRsp rsp{};
     rsp.success = OnStop();
-    ret.set_value(std::make_shared<TBuffer>(rsp));
+    return std::make_shared<TBuffer>(rsp);
 }
 

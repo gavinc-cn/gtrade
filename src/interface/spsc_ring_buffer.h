@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include <algorithm>  // std::min（HandleFullQueue 使用；本头文件自包含）
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -273,7 +274,7 @@ public:
 
 private:
     // 队列满时的处理（编译期特化）
-    bool HandleFullQueue(const T& item, uint64_t current_write, uint64_t current_confirmed) {
+    bool HandleFullQueue(const T& item, uint64_t current_write, [[maybe_unused]] uint64_t current_confirmed) {
         if constexpr (FPolicy == FullPolicy::ReturnFalse) {
             return false;  // 直接返回失败
         } else if constexpr (FPolicy == FullPolicy::Overwrite) {

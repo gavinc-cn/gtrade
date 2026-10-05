@@ -53,6 +53,14 @@ struct MarketInfo: public Base
     char inst_state;
 };
 
+// 同步查询响应头：同步链路（PostSyncMsg）的 Buffer 表达不了失败 —— 框架会把 handler
+// 返回的 nullptr 兜底成非空空响应（见 utilities/zrtools/io_pool_v2/i_handler.h），
+// 调用方只剩 GetSize() 可用，于是"该 inst_type 0 条标的"会被误判成查询失败。
+// 故把成败显式写进响应首部：8 字节，保证紧随其后的 MarketInfo 数组保持 8 字节对齐。
+struct MarketInfoQryRspHeader {
+    int64_t ok {0};   // 1=查询成功（后面可以跟 0 条 MarketInfo，属合法结果）；0=查询失败
+};
+
 struct Ticker: public Base
 {
 

@@ -225,5 +225,166 @@ std::ostream& operator<<(std::ostream& os, const StratQryMarketInfoReq& st)
     return os;
 }
             
+std::ostream& operator<<(std::ostream& os, const HttpPlaceOrderReq& st)
+{
+    os << "{" 
+    << "account_id:" << st.account_id << ","
+    << "market:" << st.market << ","
+    << "inst_id:" << st.inst_id << ","
+    << "portfolio:" << st.portfolio << ","
+    << "td_mode:" << st.td_mode << ","
+    << "side:" << st.side << ","
+    << "ord_type:" << st.ord_type << ","
+    << "px:" << st.px << ","
+    << "sz:" << st.sz << ","
+    << "ent_time:" << st.ent_time 
+    << "}";
+    return os;
+}
+            
+std::ostream& operator<<(std::ostream& os, const HttpPlaceOrderRsp& st)
+{
+    os << "{" 
+    << "success:" << st.success << ","
+    << "order_id:" << st.order_id << ","
+    << "error_msg:" << st.error_msg 
+    << "}";
+    return os;
+}
+            
+std::ostream& operator<<(std::ostream& os, const HttpCancelOrderReq& st)
+{
+    os << "{" 
+    << "account_id:" << st.account_id << ","
+    << "order_id:" << st.order_id 
+    << "}";
+    return os;
+}
+            
+std::ostream& operator<<(std::ostream& os, const HttpCancelOrderRsp& st)
+{
+    os << "{" 
+    << "success:" << st.success << ","
+    << "error_msg:" << st.error_msg 
+    << "}";
+    return os;
+}
+            
+std::ostream& operator<<(std::ostream& os, const HttpGetDepthReq& st)
+{
+    os << "{" 
+    << "inst_id:" << st.inst_id << ","
+    << "market:" << st.market 
+    << "}";
+    return os;
+}
+            
+std::ostream& operator<<(std::ostream& os, const HttpGetDepthRsp& st)
+{
+    os << "{" 
+    << "success:" << st.success << ","
+    << "inst_id:" << st.inst_id << ","
+    << "market:" << st.market << ","
+    << "ask_cnt:" << st.ask_cnt << ","
+    << "ask_price:[";
+    for (auto i=std::begin(st.ask_price); i!=std::end(st.ask_price); i++)
+    {
+        decltype(*i) empty{};
+        if (memcmp(i, &empty, sizeof(*i)) == 0) continue;
+        os << *i;
+        if (std::next(i) != std::end(st.ask_price))
+        {
+            os << ", ";
+        }
+    }
+    os << "]" << ","
+    << "ask_amount:[";
+    for (auto i=std::begin(st.ask_amount); i!=std::end(st.ask_amount); i++)
+    {
+        decltype(*i) empty{};
+        if (memcmp(i, &empty, sizeof(*i)) == 0) continue;
+        os << *i;
+        if (std::next(i) != std::end(st.ask_amount))
+        {
+            os << ", ";
+        }
+    }
+    os << "]" << ","
+    << "bid_cnt:" << st.bid_cnt << ","
+    << "bid_price:[";
+    for (auto i=std::begin(st.bid_price); i!=std::end(st.bid_price); i++)
+    {
+        decltype(*i) empty{};
+        if (memcmp(i, &empty, sizeof(*i)) == 0) continue;
+        os << *i;
+        if (std::next(i) != std::end(st.bid_price))
+        {
+            os << ", ";
+        }
+    }
+    os << "]" << ","
+    << "bid_amount:[";
+    for (auto i=std::begin(st.bid_amount); i!=std::end(st.bid_amount); i++)
+    {
+        decltype(*i) empty{};
+        if (memcmp(i, &empty, sizeof(*i)) == 0) continue;
+        os << *i;
+        if (std::next(i) != std::end(st.bid_amount))
+        {
+            os << ", ";
+        }
+    }
+    os << "]" << ","
+    << "timestamp:" << st.timestamp << ","
+    << "error_msg:" << st.error_msg 
+    << "}";
+    return os;
+}
+            
+std::ostream& operator<<(std::ostream& os, const InstrumentScopeItem& st)
+{
+    os << "{" 
+    << "market:" << st.market << ","
+    << "inst_id:" << st.inst_id << ","
+    << "inst_type:" << st.inst_type 
+    << "}";
+    return os;
+}
+            
+std::ostream& operator<<(std::ostream& os, const InstrumentInfoItem& st)
+{
+    os << "{" 
+    << "market:" << st.market << ","
+    << "inst_id:" << st.inst_id << ","
+    << "inst_type:" << st.inst_type 
+    << "}";
+    return os;
+}
+            
+std::ostream& operator<<(std::ostream& os, const ScopeOwnerItem& st)
+{
+    os << "{" 
+    << "market:" << st.market << ","
+    << "inst_id:" << st.inst_id << ","
+    << "inst_type:" << st.inst_type << ","
+    << "owner:" << st.owner 
+    << "}";
+    return os;
+}
+            
+std::ostream& operator<<(std::ostream& os, const HttpSetInstrumentScopeReq& st)
+{
+    os << "{" 
+    << "}";
+    return os;
+}
+            
+std::ostream& operator<<(std::ostream& os, const HttpSetInstrumentScopeRsp& st)
+{
+    os << "{" 
+    << "}";
+    return os;
+}
+            
 
 #endif // __linux__

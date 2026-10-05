@@ -117,7 +117,7 @@ void TimerManager::OnResumeAllTimer(int msg_id, const BufPtr buffer) {
     }
 }
 
-void TimerManager::OnListAllTimer(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret)
+BufPtr TimerManager::OnListAllTimer(int msg_id, const BufPtr buffer)
 {
     SPDLOG_INFO("{}", msg_id);
     TBufferPtr buf = std::make_shared<TBuffer>();
@@ -129,6 +129,6 @@ void TimerManager::OnListAllTimer(int msg_id, const BufPtr buffer, std::promise<
         zrt::fill_field(key.timer_id, p.second.timer_id);
         buf->Append(key);
     }
-    ret.set_value(buf);
+    return buf;
 }
 

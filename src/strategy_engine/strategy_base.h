@@ -256,7 +256,14 @@ public:
             SetThread(zrt::EnginePool::GetInstance().GetNamedThread(k_BackTestThread));
         }
         else {
+#ifdef GTRADE_LATENCY_SINGLE_THREAD
+            // 方案C：实盘策略绑 k_StrategyEngineThread 指向的 SyncThread（与 Engine/DpdkTradeSink 同）。
+            // SyncThread.Post 同步执行 task()，故 Engine↔策略↔DpdkTradeSink 间任意 SyncThread 实例的
+            // PostMsg 都在调用方线程同步跑，整条链落在 DpdkQuoteSource 的 rx busy-poll 核上（0 跨线程）。
+            SetThread(zrt::EnginePool::GetInstance().GetNamedThread(k_StrategyEngineThread));
+#else
             SetThread(zrt::EnginePool::GetInstance().GetSharedThread());
+#endif
         }
     }
 
@@ -376,8 +383,8 @@ protected:
 
 private:
     // 生命周期同步消息处理（由引擎线程通过 PostSyncMsg 投递到策略线程执行）
-    void OnStratStartSync(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret);
-    void OnStratStopSync(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret);
+    BufPtr OnStratStartSync(int msg_id, const BufPtr buffer);
+    BufPtr OnStratStopSync(int msg_id, const BufPtr buffer);
 
     MyHandler* m_strat_engine {};
     std::shared_ptr<spdlog::logger> m_logger = spdlog::default_logger();

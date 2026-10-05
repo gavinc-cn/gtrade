@@ -80,7 +80,8 @@ std::ostream& operator<<(std::ostream& os, const Order& st)
     << "status_id:" << st.status_id << ","
     << "status_gid:" << st.status_gid << ","
     << "trd_px:" << st.trd_px << ","
-    << "trd_qty:" << st.trd_qty 
+    << "trd_qty:" << st.trd_qty << ","
+    << "quote_monotonic:" << st.quote_monotonic 
     << "}";
     return os;
 }

@@ -26,9 +26,9 @@ public:
     bool Init() override;
     bool Start() override;
     void UpdateTime(int64_t new_time) override;
-private:
+protected:  // 处理器开放为 protected 供单测子类同步驱动（成员变量仍保持 private）
     void OnDefaultMsg(int msg_id, const BufPtr buffer) override {}
-    void OnDefaultSyncMsg(int msg_id, const BufPtr buffer, std::promise<BufPtr >& ret) override {}
+    BufPtr OnDefaultSyncMsg(int msg_id, const BufPtr buffer) override { return nullptr; }
     // void OnBusRetransBegin(int msg_id, const BufPtr buffer) override {}
     // void OnBusRetransEnd(int msg_id, const BufPtr buffer) override {}
     // void OnStartEpochGenerator(int msg_id, const BufPtr buffer) override;
@@ -39,9 +39,10 @@ private:
     void OnClearAllTimer(int msg_id, const BufPtr buffer) override;
     void OnPauseAllTimer(int msg_id, const BufPtr buffer) override;
     void OnResumeAllTimer(int msg_id, const BufPtr buffer) override;
-    void OnListAllTimer(int msg_id, const BufPtr buffer, std::promise<BufPtr>& ret) override;
+    BufPtr OnListAllTimer(int msg_id, const BufPtr buffer) override;
     void OnBacktestTimerEvent(int msg_id, const BufPtr buffer);
 
+private:
     ServiceMap& m_pool;
     const GTradeConfig m_gtrade_cfg {};
     MyHandler* m_strategy_engine {};
